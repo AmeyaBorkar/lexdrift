@@ -7,7 +7,7 @@ from lexdrift.nlp.tokenizer import tokenize
 
 logger = logging.getLogger(__name__)
 
-LEXICON_PATH = Path("data/loughran_mcdonald.csv")
+LEXICON_PATH = Path("data/Loughran-McDonald_MasterDictionary_1993-2024.csv")
 
 # Sentiment categories from the Loughran-McDonald dictionary
 CATEGORIES = ["negative", "positive", "uncertainty", "litigious", "constraining"]
