@@ -1,170 +1,302 @@
 # LexDrift — SEC Semantic Drift Analyzer
 
-## What Is This?
+A financial intelligence system that tracks **how public companies change their language** across SEC filings (10-K, 10-Q, 8-K) over time. Instead of asking "what did the company say?", LexDrift answers **"what did the company say *differently*, and why does that matter?"**
 
-A financial intelligence tool that tracks **how public companies change their language** across SEC filings (10-K, 10-Q, 8-K) over time. Instead of asking "what did the company say?", this tool answers **"what did the company say *differently* compared to last quarter, and why does that matter?"**
-
-When a company quietly adds "supply chain uncertainty" to its risk factors, shifts from "confident" to "cautiously optimistic," removes a previously stated growth target, or rewrites its revenue recognition disclosures — these linguistic shifts are **leading indicators** of financial trouble, strategic pivots, or regulatory concerns. Analysts who catch these changes early have a material information advantage.
+When a company quietly adds "supply chain uncertainty" to its risk factors, shifts from "confident" to "cautiously optimistic," removes a growth target, or rewrites revenue recognition disclosures — these linguistic shifts are **leading indicators** of financial trouble, strategic pivots, or regulatory concerns.
 
 ---
 
-## The Problem
+## Quick Start
 
-Thousands of public companies file 10-K (annual) and 10-Q (quarterly) reports with the SEC every quarter. These filings contain rich, unstructured text — risk factors, management discussion & analysis (MD&A), forward-looking statements, legal disclosures — that evolves over time.
+```bash
+# 1. Install backend
+pip install -e ".[dev]"
+python -m spacy download en_core_web_sm
 
-**The current workflow is broken:**
+# 2. Download Loughran-McDonald dictionary
+# Get CSV from https://sraf.nd.edu/loughranmcdonald-master-dictionary/
+# Save to data/Loughran-McDonald_MasterDictionary_1993-2024.csv
 
-- Analysts manually read hundreds of pages per company per quarter
-- They rely on memory or personal notes to recall what changed from the prior filing
-- There is no systematic way to track linguistic evolution across a coverage universe of 50–500 companies
-- Subtle but critical changes (a new risk factor buried on page 87, a removed growth target, a shift in tone) get missed regularly
-- By the time the language change manifests in the financial numbers, the stock has already moved
+# 3. Start backend
+uvicorn lexdrift.main:app --reload
+# API at http://localhost:8000 — Swagger docs at http://localhost:8000/docs
 
-**Who suffers from this problem:**
+# 4. Start frontend
+cd frontend && npm install && npm run dev
+# UI at http://localhost:3000
 
-- **Equity analysts** covering 20+ companies who can't read every page of every filing
-- **Credit analysts** monitoring debt covenants and risk disclosures across large portfolios
-- **Short sellers** looking for early signs of deterioration in management confidence
-- **Compliance/audit teams** tracking disclosure consistency
-- **Retail investors** who never read filings at all and rely on summaries that miss nuance
+# 5. Ingest + analyze a company
+curl -X POST "http://localhost:8000/filings/ingest/TSLA?form_type=10-K&limit=3"
+curl -X POST "http://localhost:8000/filings/1/analyze"
+```
+
+Or run everything at once (ingest 30 S&P 500 companies, analyze, train models):
+
+```bash
+python scripts/run_all.py
+```
 
 ---
 
-## Why This Is Novel
+## Architecture
 
-Existing NLP tools in finance do **sentiment analysis** — they score a single document as positive or negative. Bloomberg Terminal shows filing text but doesn't analyze it. Refinitiv provides news sentiment. None of them do what this tool does:
+```
+SEC EDGAR ──→ Ingest ──→ Parse ──→ Analyze ──→ Score ──→ Alert
+                │           │          │          │         │
+            Download    iXBRL +    3-Layer     Risk     Anomaly
+              HTML      Regex     Drift NLP   Scoring   Detection
+                       Fallback              per sentence
+```
 
-**Semantic drift analysis** is fundamentally different from sentiment analysis:
+### The 3-Layer Drift Engine
 
-| Sentiment Analysis | Semantic Drift Analysis |
+Every filing is compared against the previous filing of the same type:
+
+| Layer | Method | What It Catches |
+|---|---|---|
+| **Section** | Cosine distance on chunked sentence-transformer embeddings | Overall semantic shift in a section |
+| **Sentence** | NxN similarity matrix with greedy alignment | Specific sentences added, removed, or reworded |
+| **Word** | Auto n-gram discovery (bigram/trigram frequency diff) | New/disappeared phrases without any hardcoded list |
+
+Sentence alignment also detects **likely replacements** — when a company removes "workforce reduction of 2,000 employees" and adds "organizational realignment initiatives," the system links them even though no words overlap.
+
+### 5 Novel Research Contributions
+
+| Module | What It Does |
 |---|---|
-| Scores one document in isolation | Compares the same company's documents over time |
-| "This filing is negative" | "This filing is *more negative than the last three*" |
-| Binary/scalar output | Rich diff output showing exactly what changed |
-| Generic model, same for all companies | Company-specific baseline that learns each firm's normal language |
-| Widely available | Does not exist as a product |
-
-**Academic validation:** Research by Loughran & McDonald (2011), Cohen, Malloy & Nguyen (2020), and others has demonstrated that textual changes in SEC filings predict future stock returns, earnings restatements, and SEC enforcement actions. This research has **never been productized** in an accessible way.
+| **Adversarial Obfuscation Detection** | Detects when companies deliberately hide bad news: information density drop, specificity decrease, readability worsening, euphemism substitution |
+| **Filing Entropy Analysis** | Shannon entropy, KL divergence, cross-entropy to distinguish genuinely novel disclosures from recycled boilerplate |
+| **Semantic Kinematics** | Velocity, acceleration, jerk, momentum of drift over time. Phase classification: stable → drifting → accelerating → regime_change |
+| **Cross-Company Risk Contagion** | Graph-based detection of risk language propagation through supply chains and sectors |
+| **Latent Risk Trajectories** | UMAP/PCA projection of all filings into shared space. Tracks company trajectories toward distress zones |
 
 ---
 
-## What the End Product Looks Like
+## Project Structure
 
-### Company Dashboard
-A per-company view showing:
-- **Filing Timeline:** Every 10-K and 10-Q plotted chronologically with an overall "drift score" indicating how much the language changed from the prior period
-- **Section-by-Section Diff:** For each major filing section (Risk Factors, MD&A, Business Description, Legal Proceedings, etc.), a visual diff highlighting additions, deletions, and modifications — similar to a GitHub diff but for financial prose
-- **Risk Factor Evolution:** A dedicated tracker for risk factors, showing when new risks were added, old risks removed, and existing risks reworded. Risk factors are the most predictive section for future trouble
-- **Tone Shift Timeline:** Charts showing how sentiment, uncertainty, litigiousness, and confidence in language evolve across quarters using the Loughran-McDonald financial lexicon
-- **Key Phrase Tracker:** Tracks the appearance and disappearance of critical phrases ("going concern," "material weakness," "restatement," "goodwill impairment," "supply chain," etc.)
-
-### Watchlist & Alerts
-- Users add companies to a watchlist
-- The system automatically ingests new filings when they appear on EDGAR
-- Alerts are triggered when:
-  - A filing's drift score exceeds a configurable threshold
-  - A new risk factor appears that wasn't in the prior filing
-  - Specific monitored phrases appear or disappear
-  - The overall tone of MD&A shifts beyond historical norms for that company
-
-### Comparison View
-- Compare any two filings from the same company side-by-side
-- Compare the same section across multiple quarters to see evolution
-- Compare how two different companies in the same sector describe the same risk
-
-### Portfolio / Screener View
-- Upload a list of tickers or select an index (S&P 500, Russell 2000)
-- See a ranked table of all companies sorted by recent drift score
-- Filter by section, by type of change (additions vs. deletions), by sentiment direction
-- Identify "outlier" companies whose language is changing much more than peers
-
----
-
-## Data Sources & Resources
-
-### Primary Data — SEC EDGAR (Free, No API Key)
-
-| Resource | URL | What It Provides |
-|---|---|---|
-| EDGAR Full-Text Search API | `https://efts.sec.gov/LATEST/search-index?q=...` | Search across all filings by keyword, date, form type. JSON response. |
-| Company Filing Metadata | `https://data.sec.gov/submissions/CIK{cik}.json` | All filings for a given company — accession numbers, dates, form types. JSON. |
-| Individual Filing Access | `https://www.sec.gov/Archives/edgar/data/{CIK}/{accession}/` | Full text of any filing in HTML/XML/SGML. |
-| Bulk Filing Index | `https://www.sec.gov/Archives/edgar/full-index/` | Quarterly indexes of all filings. Pipe-delimited text files. |
-| Company Tickers & CIK Map | `https://www.sec.gov/files/company_tickers.json` | Maps ticker symbols to CIK numbers. JSON. |
-| XBRL Company Facts | `https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json` | Structured financial data for any filer. JSON. |
-
-**Rate limit:** 10 requests/second. Must include a `User-Agent` header with name and email.
-
-**Coverage:** ~800,000+ filers. Full-text filings available from ~1993 onward. XBRL structured data from ~2009 onward.
-
-### Financial Sentiment Lexicon
-
-| Resource | URL | What It Provides |
-|---|---|---|
-| Loughran-McDonald Master Dictionary | `https://sraf.nd.edu/loughranmcdonald-master-dictionary/` | ~85,000 words classified as positive, negative, uncertain, litigious, constraining, superfluous. CSV. The gold standard for financial text analysis. |
-| Loughran-McDonald Sentiment Word Lists | `https://sraf.nd.edu/loughranmcdonald-master-dictionary/` | Pre-filtered word lists for each sentiment category. |
-
-**License:** Free for academic and research use.
-
-### Pre-Parsed Datasets (Supplementary)
-
-| Resource | Platform | What It Provides |
-|---|---|---|
-| SEC 10-K Filings Dataset | Kaggle (search "SEC filings 10-K") | Pre-parsed MD&A sections and risk factors. CSV. |
-| SEC Filings NLP Dataset | HuggingFace (search "sec-filings") | Tokenized filing text ready for NLP pipelines. Parquet. |
-| EDGAR Online Parsed Filings | Various academic sources | Section-segmented filing text. Availability varies. |
-
-### Earnings Releases (Supplementary)
-
-| Resource | URL | What It Provides |
-|---|---|---|
-| 8-K Item 2.02 Filings | EDGAR (form type `8-K`, search "Item 2.02") | Earnings release text filed with the SEC. Free. Not full call transcripts, but contains management's prepared commentary. |
-
-### Academic Papers (Background Reading)
-
-| Paper | Authors | Key Finding |
-|---|---|---|
-| "When Is a Liability Not a Liability?" | Loughran & McDonald (2011) | Financial-specific word lists outperform generic sentiment dictionaries for SEC filing analysis. Introduced the Loughran-McDonald lexicon. |
-| "Lazy Prices" | Cohen, Malloy & Nguyen (2020) | Quarter-over-quarter changes in 10-K/10-Q text predict future stock returns. Firms that change their filings more earn lower future returns. The foundational paper for this tool's thesis. |
-| "Measuring Readability in Financial Disclosures" | Loughran & McDonald (2014) | Bog Index for measuring filing complexity. Complex filings correlate with worse outcomes. |
-| "Textual Analysis in Accounting and Finance" | Loughran & McDonald (2016) | Comprehensive survey of NLP methods applied to financial disclosures. |
-| "The Annual Report Algorithm" | Hoberg & Lewis (2017) | Using 10-K text to identify peer firms and predict competitive dynamics. |
-| "MD&A Disclosure and the Firm's Ability to Continue as a Going Concern" | Mayew, Sethuraman & Venkatachalam (2015) | MD&A linguistic features predict going-concern risk before auditors flag it. |
+```
+lexdrift/
+├── src/lexdrift/
+│   ├── main.py                     # FastAPI app — 29 API routes
+│   ├── config.py                   # Pydantic settings (.env based)
+│   ├── api/                        # REST endpoints
+│   │   ├── companies.py            # Company search + lookup
+│   │   ├── filings.py              # Ingest + section retrieval
+│   │   ├── drift.py                # Analysis + drift timeline + screener
+│   │   ├── alerts.py               # Watchlists + alert management
+│   │   └── research.py             # Obfuscation, entropy, kinematics, contagion, latent space
+│   ├── nlp/                        # 15 NLP modules
+│   │   ├── drift.py                # Orchestrates all analysis with graceful degradation
+│   │   ├── sentences.py            # Sentence-level alignment (capped at 300 for memory safety)
+│   │   ├── embeddings.py           # Chunked mean-pooling, thread-safe model loading
+│   │   ├── sentiment.py            # Loughran-McDonald 5-category scoring (3,861 words)
+│   │   ├── risk.py                 # Per-sentence risk: critical/high/medium/low/boilerplate
+│   │   ├── phrases.py              # Auto n-gram discovery + priority phrase tracking
+│   │   ├── anomaly.py              # Company-specific z-scores + trend detection
+│   │   ├── obfuscation.py          # Information density, specificity, readability, euphemisms
+│   │   ├── entropy.py              # Shannon entropy, KL divergence, novelty scoring
+│   │   ├── velocity.py             # Semantic velocity, acceleration, jerk, phase classification
+│   │   ├── contagion.py            # Risk propagation graph with spectral analysis
+│   │   ├── latent_space.py         # UMAP/PCA trajectory analysis, danger zone detection
+│   │   ├── boilerplate.py          # Cross-company dedup + trained classifier
+│   │   ├── diff.py                 # Unified text diffs
+│   │   └── tokenizer.py            # Abbreviation-aware sentence splitting
+│   ├── edgar/                      # SEC EDGAR integration
+│   │   ├── client.py               # Rate-limited async HTTP (10 req/sec)
+│   │   ├── tickers.py              # Ticker/CIK lookup (371K companies)
+│   │   ├── filings.py              # Filing metadata + download
+│   │   └── parser.py               # iXBRL → regex → title-based (3-pass)
+│   ├── workers/                    # Celery background tasks
+│   │   ├── ingest.py               # Filing download + parse
+│   │   ├── analyze.py              # Full NLP pipeline
+│   │   └── monitor.py              # EDGAR polling (every 30 min)
+│   ├── training/                   # Self-supervised ML pipelines
+│   │   ├── finetune.py             # Contrastive embedding fine-tuning
+│   │   ├── data_quality.py         # 5-tier elite training data (text-level, no circular dependency)
+│   │   ├── risk_classifier.py      # MLP risk severity classifier
+│   │   └── boilerplate_classifier.py # Binary boilerplate classifier
+│   └── db/
+│       ├── models.py               # 9 SQLAlchemy tables
+│       ├── engine.py               # Async engine (SQLite dev / PostgreSQL prod)
+│       └── session.py              # FastAPI dependency
+├── frontend/                       # Next.js 14 + Tailwind CSS
+│   └── src/
+│       ├── app/                    # Pages: dashboard, screener, company, alerts, watchlist
+│       ├── components/             # Sidebar, header, theme toggle, data table, cards
+│       └── lib/                    # Typed API client (20+ functions)
+├── scripts/
+│   ├── run_all.py                  # One-click: ingest → analyze → train → re-analyze
+│   └── backfill.py                 # S&P 500 bulk ingestion (30 tickers)
+├── tests/                          # 82 tests (unit + integration)
+├── Dockerfile                      # Multi-stage Python 3.11
+├── docker-compose.yml              # App + workers + Redis + PostgreSQL
+└── data/
+    ├── Loughran-McDonald_MasterDictionary_1993-2024.csv
+    └── default_phrases.json
+```
 
 ---
 
-## Competitive Landscape
+## API Endpoints (29 routes)
 
-| Tool | What It Does | What It Lacks |
-|---|---|---|
-| Bloomberg Terminal | Displays raw filing text; basic keyword search | No temporal analysis, no drift detection, no linguistic comparison |
-| Refinitiv/LSEG | News sentiment scores | Single-document sentiment, not cross-filing drift |
-| AlphaSense | Enterprise search across filings and transcripts | Powerful search, but no systematic drift scoring or evolution tracking |
-| Sentieo (now AlphaSense) | Document search with annotations | Search-oriented, not drift-oriented |
-| Calcbench | Structured financial data extraction from XBRL | Numbers only, no text analysis |
-| This Tool | Cross-filing semantic drift detection and alerting | — |
+### Core
+```
+GET  /health
+GET  /companies?q={search}
+GET  /companies/{ticker}
+GET  /companies/{ticker}/filings
+GET  /companies/{ticker}/drift
+GET  /companies/{ticker}/phrases
+```
 
-The key differentiator: every existing tool treats each filing as an **independent document**. This tool treats each filing as a **data point in a time series** of corporate communication.
+### Filing Operations
+```
+POST /filings/ingest/{ticker}?form_type=10-K&limit=3
+GET  /filings/{id}
+GET  /filings/{id}/sections/{type}
+POST /filings/{id}/analyze?force=false
+GET  /filings/{id}/diff?vs={prev_id}&section_type=risk_factors
+```
+
+### Drift Analysis
+```
+GET  /drift/screener?section_type=risk_factors&sort_by=cosine_distance
+GET  /drift/{drift_score_id}/sentences?change_type=added
+```
+
+### Watchlists & Alerts
+```
+POST /watchlists
+GET  /watchlists
+POST /watchlists/{id}/companies
+DELETE /watchlists/{id}/companies/{ticker}
+GET  /alerts?unread=true
+PUT  /alerts/{id}/read
+```
+
+### Research (Novel Features)
+```
+POST /research/obfuscation/{filing_id}
+POST /research/entropy/{filing_id}
+GET  /research/kinematics/{ticker}
+GET  /research/overview/{ticker}
+GET  /research/contagion/{ticker}
+GET  /research/latent-space
+```
 
 ---
 
-## Target Users
+## Database Schema
 
-1. **Buy-side equity analysts** — Detect early warning signals across their coverage universe
-2. **Credit analysts at banks and funds** — Monitor risk disclosure evolution in credit portfolios
-3. **Short sellers / activist investors** — Identify companies whose language is deteriorating before fundamentals
-4. **Compliance and audit teams** — Track disclosure consistency and flag material changes
-5. **Academic researchers** — Study corporate communication patterns at scale
-6. **Retail investors (power users)** — Access institutional-grade filing analysis without reading 200-page documents
+9 tables with proper indices:
+
+- **companies** — CIK, ticker, name, SIC code
+- **filings** — accession number, form type, dates, status
+- **sections** — section text, word count, embedding (BLOB)
+- **drift_scores** — cosine/Jaccard distance, sentiment delta, word changes
+- **sentence_changes** — added/removed/changed sentences with similarity scores
+- **key_phrases** — auto-discovered + priority phrase tracking
+- **alerts** — drift_anomaly, critical_risk_language, phrase_change, obfuscation_detected
+- **watchlists** + **watchlist_companies** — user watchlist management
 
 ---
 
-## Success Metrics
+## Training Pipelines
 
-This tool is successful when:
+All three pipelines are self-supervised — zero human labels required.
 
-- A user can onboard a new company and see its complete filing evolution in under 30 seconds
-- Drift alerts fire 1–2 quarters before material events (earnings misses, restatements, lawsuits)
-- The system processes new EDGAR filings within 1 hour of publication
-- Coverage spans the entire EDGAR universe (all public filers), not just large-caps
-- False positive rate on alerts is low enough that users don't disable them
+### 1. Embedding Fine-Tuning
+```bash
+python -m lexdrift.training.finetune --elite --epochs 3
+```
+Uses 5-tier text-level training data (no circular model dependency):
+- Tier 1: Exact match sentences across filings (label=1.0)
+- Tier 2: High Jaccard overlap pairs (label=0.85-0.95)
+- Tier 3: Cross-section hard negatives (label=0.0)
+- Tier 4: Cross-company boilerplate positives (label=0.9)
+- Tier 5: Outcome-anchored negatives (label=0.0)
+
+### 2. Risk Classifier
+```bash
+python -m lexdrift.training.risk_classifier
+```
+2-layer MLP (384→128→4) bootstrapped from keyword system. Auto-loaded at inference time if `models/risk_classifier.pt` exists.
+
+### 3. Boilerplate Classifier
+```bash
+python -m lexdrift.training.boilerplate_classifier
+```
+Binary MLP trained on cross-company sentence frequency. Sentences in 3+ companies = boilerplate.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| API | FastAPI + uvicorn (async) |
+| Frontend | Next.js 14 + Tailwind CSS + Recharts |
+| Database | SQLAlchemy 2.0 (SQLite dev / PostgreSQL prod) |
+| Migrations | Alembic |
+| NLP | sentence-transformers (all-MiniLM-L6-v2), spaCy, Loughran-McDonald lexicon |
+| Task Queue | Celery + Redis |
+| Deployment | Docker + docker-compose |
+| HTTP Client | httpx (async, rate-limited) |
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and configure:
+
+```env
+DATABASE_URL=sqlite+aiosqlite:///./lexdrift.db
+SEC_USER_AGENT=LexDrift your-email@example.com
+SEC_RATE_LIMIT=10
+CELERY_BROKER_URL=redis://localhost:6379/0
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+DRIFT_THRESHOLD=0.15
+```
+
+---
+
+## Docker
+
+```bash
+docker-compose up
+```
+
+Runs: FastAPI app + 2 Celery workers + beat scheduler + Redis + PostgreSQL.
+
+---
+
+## Stats
+
+| Metric | Count |
+|---|---|
+| Python files | 65 |
+| Lines of code | 9,700+ |
+| API routes | 29 |
+| NLP modules | 15 |
+| Tests | 82 (all passing) |
+| DB tables | 9 |
+| Training pipelines | 3 (self-supervised) |
+| Frontend pages | 5 |
+
+---
+
+## Academic Foundation
+
+| Paper | Key Finding |
+|---|---|
+| Cohen, Malloy & Nguyen (2020) "Lazy Prices" | Textual changes in 10-K/10-Q predict future stock returns |
+| Loughran & McDonald (2011) | Financial-specific word lists outperform generic sentiment for SEC filings |
+| Loughran & McDonald (2014) | Filing complexity correlates with worse outcomes |
+| Hoberg & Lewis (2017) | 10-K text identifies peer firms and predicts competitive dynamics |
+| Mayew, Sethuraman & Venkatachalam (2015) | MD&A linguistic features predict going-concern risk before auditors flag it |
+
+---
+
+## License
+
+MIT
