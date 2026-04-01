@@ -7,6 +7,7 @@ from lexdrift.api.alerts import router as alerts_router
 from lexdrift.api.companies import router as companies_router
 from lexdrift.api.drift import router as drift_router
 from lexdrift.api.filings import router as filings_router
+from lexdrift.api.research import router as research_router
 from lexdrift.db.engine import engine
 from lexdrift.db.models import Base
 from lexdrift.edgar.client import edgar_client
@@ -42,6 +43,7 @@ app.include_router(companies_router)
 app.include_router(filings_router)
 app.include_router(drift_router)
 app.include_router(alerts_router)
+app.include_router(research_router)
 
 
 @app.get("/health")

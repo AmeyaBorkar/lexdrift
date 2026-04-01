@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+
+  worker-ingest:
+    build: .
+    command: celery -A lexdrift.workers.celery_app worker -Q ingest -l info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+
+  worker-analyze:
+    build: .
+    command: celery -A lexdrift.workers.celery_app worker -Q analyze -l info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+
+  beat:
+    build: .
+    command: celery -A lexdrift.workers.celery_app beat -l info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: lexdrift
+      POSTGRES_USER: lexdrift
+      POSTGRES_PASSWORD: lexdrift
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

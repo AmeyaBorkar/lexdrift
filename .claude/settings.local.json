@@ -21,7 +21,21 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/nlp/latent_space.py'\\).read\\(\\)\\); print\\('latent_space.py: OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/training/finetune.py'\\).read\\(\\)\\); print\\('finetune.py: OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/training/__init__.py'\\).read\\(\\)\\); print\\('training/__init__.py: OK'\\)\")",
-      "Bash(ls -la \"C:/Users/ameya/Documents/FiananceProject/lexdrift/src/lexdrift/nlp/\"*.py)"
+      "Bash(ls -la \"C:/Users/ameya/Documents/FiananceProject/lexdrift/src/lexdrift/nlp/\"*.py)",
+      "Bash(python -m alembic revision --autogenerate -m \"add sentence_changes table\")",
+      "Bash(python -m alembic upgrade head)",
+      "Bash(rm -f lexdrift.db)",
+      "Bash(python -m alembic stamp head)",
+      "Bash(uvicorn lexdrift.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(curl -s http://127.0.0.1:8000/health)",
+      "Bash(curl -s http://127.0.0.1:8000/companies?q=AAPL)",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s -X POST \"http://127.0.0.1:8000/filings/ingest/AAPL?form_type=10-K&limit=3\")",
+      "Bash(curl -s -X POST \"http://127.0.0.1:8000/filings/1/analyze\")",
+      "Bash(curl -s -X POST \"http://127.0.0.1:8000/filings/2/analyze\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/api/research.py'\\).read\\(\\)\\); print\\('research.py: syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/main.py'\\).read\\(\\)\\); print\\('main.py: syntax OK'\\)\")",
+      "Bash(python -m pytest tests/ -v --tb=short)"
     ]
   }
 }
