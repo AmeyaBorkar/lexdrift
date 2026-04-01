@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -27,6 +27,9 @@ export function Sidebar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => { setMounted(true); }, []);
 
   function toggleTheme() {
     setTheme(theme === "dark" ? "light" : "dark");
@@ -103,12 +106,12 @@ export function Sidebar() {
             className="flex w-full items-center gap-3 rounded px-3 py-2 text-sm text-muted-foreground transition-colors duration-200 hover:bg-muted/30 hover:text-foreground"
             aria-label="Toggle theme"
           >
-            {theme === "dark" ? (
-              <Sun className="h-4 w-4" />
+            {mounted ? (
+              theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />
             ) : (
-              <Moon className="h-4 w-4" />
+              <div className="h-4 w-4" />
             )}
-            {theme === "dark" ? "Light mode" : "Dark mode"}
+            {mounted ? (theme === "dark" ? "Light mode" : "Dark mode") : "Toggle theme"}
           </button>
         </div>
       </aside>
