@@ -119,6 +119,48 @@ def _strip_toc_block(text: str) -> str:
     return text
 
 
+def _strip_xbrl_preamble(text: str) -> str:
+    """Strip XBRL namespace URIs and metadata from the start of cleaned text.
+
+    Some filings (GE, HON, MCD, etc.) are iXBRL documents where the first
+    thousands of lines are XBRL namespace URIs, taxonomy references, and
+    metadata. The actual prose starts much later. Detect and skip this preamble
+    by finding the first line that looks like real prose (8+ words, not a URL,
+    not a namespace declaration).
+    """
+    lines = text.split("\n")
+    preamble_end = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip lines that look like XBRL/namespace junk
+        if (
+            stripped.startswith("http")
+            or stripped.startswith("{")
+            or stripped.startswith("xmlns")
+            or re.match(r"^[\d\-]+$", stripped)  # just numbers/dates
+            or re.match(r"^[a-z\-]+:[\w/\.\-]+$", stripped, re.IGNORECASE)  # namespace:uri
+            or len(stripped) < 3
+        ):
+            preamble_end = i + 1
+            continue
+        # Real prose: 6+ words, contains spaces
+        words = stripped.split()
+        if len(words) >= 6:
+            break
+        # Short non-URL lines — could be start of content or still preamble
+        # Keep scanning up to 5000 lines
+        if i > 5000:
+            break
+
+    if preamble_end > 50:
+        logger.info(f"Stripped {preamble_end} lines of XBRL preamble")
+        return "\n".join(lines[preamble_end:])
+    return text
+
+
 def clean_html(html_text: str) -> str:
     """Strip HTML tags and normalize whitespace from SEC filing HTML."""
     soup = BeautifulSoup(html_text, "lxml")
@@ -133,6 +175,9 @@ def clean_html(html_text: str) -> str:
     text = "\n".join(lines)
 
     text = text.strip()
+
+    # Strip XBRL preamble (namespace URIs, taxonomy references)
+    text = _strip_xbrl_preamble(text)
 
     # Strip any leading Table of Contents blocks
     text = _strip_toc_block(text)
@@ -351,6 +396,46 @@ def extract_sections(text: str, form_type: str) -> dict[str, str]:
                     continue
 
                 # Only replace if the aggressive match is longer (more content)
+                existing = sections.get(section_type, "")
+                if len(section_text.split()) > len(existing.split()):
+                    sections[section_type] = section_text
+
+    # ------------------------------------------------------------------
+    # Third pass: match by section TITLE (not "Item X" prefix).
+    # Some filings (GE, HON, MCD) use headings like "RISK FACTORS."
+    # or "LEGAL PROCEEDINGS." without the "Item 1A" prefix.
+    # ------------------------------------------------------------------
+    still_short = any(len(s.split()) < 100 for s in sections.values())
+    if still_short and form_type.startswith("10-K"):
+        logger.info("Still short sections; trying title-based matching (third pass)")
+        _TITLE_PATTERNS_10K = [
+            ("risk_factors", r"(?:^|\n)\s*RISK\s+FACTORS[\.\s:\-—]*(?:\n|$)"),
+            ("legal_proceedings", r"(?:^|\n)\s*LEGAL\s+PROCEEDINGS[\.\s:\-—]*(?:\n|$)"),
+            ("mdna", r"(?:^|\n)\s*MANAGEMENT.S?\s+DISCUSSION\s+AND\s+ANALYSIS"),
+            ("business", r"(?:^|\n)\s*(?:DESCRIPTION\s+OF\s+)?BUSINESS[\.\s:\-—]*(?:\n|$)"),
+            ("properties", r"(?:^|\n)\s*PROPERTIES[\.\s:\-—]*(?:\n|$)"),
+            ("quantitative_disclosures", r"(?:^|\n)\s*QUANTITATIVE\s+AND\s+QUALITATIVE"),
+            ("financial_statements", r"(?:^|\n)\s*FINANCIAL\s+STATEMENTS\s+AND\s+SUPPLEMENTARY"),
+            ("unresolved_staff_comments", r"(?:^|\n)\s*UNRESOLVED\s+STAFF\s+COMMENTS"),
+        ]
+        title_boundaries: list[tuple[int, str]] = []
+        for section_type, pattern in _TITLE_PATTERNS_10K:
+            for match in re.finditer(pattern, text):
+                if toc_start < match.start() < toc_end:
+                    continue
+                title_boundaries.append((match.start(), section_type))
+
+        if title_boundaries:
+            title_boundaries.sort(key=lambda x: x[0])
+            for i, (pos, section_type) in enumerate(title_boundaries):
+                end = (
+                    title_boundaries[i + 1][0]
+                    if i + 1 < len(title_boundaries)
+                    else len(text)
+                )
+                section_text = text[pos:end].strip()
+                if _is_cross_reference(section_text):
+                    continue
                 existing = sections.get(section_type, "")
                 if len(section_text.split()) > len(existing.split()):
                     sections[section_type] = section_text
