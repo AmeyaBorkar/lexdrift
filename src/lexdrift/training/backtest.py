@@ -1,19 +1,21 @@
-"""Backtesting Framework — validate drift scores against outcomes.
+"""Backtesting Framework -- validate drift scores against actual stock returns.
 
 Tests the hypothesis: "Do our drift scores actually predict financial outcomes?"
 
-For each company, we look at all drift scores ordered by filing date. A "bad
-outcome" is proxied by: significantly higher negative sentiment in the NEXT
-filing, appearance of new critical risk phrases, or a new alert being generated.
+For each company, orders drift scores by filing date, then checks whether
+high-drift filings are followed by negative stock returns (>5% loss within 30
+days of filing).
 
 Usage:
     python -m lexdrift.training.backtest
     python -m lexdrift.training.backtest --ticker AAPL
+    python -m lexdrift.training.backtest --calibrate
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -27,6 +29,11 @@ from sqlalchemy.orm import Session
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
+from lexdrift.data.price_feed import (
+    calibrate_risk_weights,
+    compute_filing_outcomes,
+    get_price_around_filing,
+)
 from lexdrift.db.models import Alert, Company, DriftScore, Filing, KeyPhrase
 
 logger = logging.getLogger(__name__)
@@ -81,15 +88,28 @@ def _has_bad_outcome(
     next_filing: Filing,
     current_sentiment_neg: float,
 ) -> bool:
-    """Determine if a 'bad outcome' occurred between current and next filing.
+    """Determine if a 'bad outcome' occurred after the current filing.
 
-    Proxies for bad outcome (since we don't have stock data):
-    1. Next filing's negative sentiment significantly higher (>0.05 increase)
-    2. New critical risk phrases appeared in the next filing
-    3. A new alert was generated for the next filing
+    A bad outcome is defined as a negative stock return >5% within 30 days
+    of the filing date. Falls back to sentiment-based proxy if price data
+    is unavailable.
     """
-    # Check 1: Sentiment deterioration
-    # Get next filing's drift scores and check sentiment_delta
+    # Look up the company ticker
+    company = db_session.get(Company, company_id)
+    ticker = company.ticker if company else None
+
+    if ticker and current_filing.filing_date:
+        fdate_str = (
+            current_filing.filing_date.isoformat()
+            if hasattr(current_filing.filing_date, "isoformat")
+            else str(current_filing.filing_date)
+        )
+        price_data = get_price_around_filing(ticker, fdate_str, window_days=30)
+        if price_data and price_data.get("return_pct") is not None:
+            # Bad outcome = negative return exceeding 5%
+            return price_data["return_pct"] < -0.05
+
+    # Fallback: sentiment-based proxy when price data is unavailable
     next_drifts = db_session.execute(
         select(DriftScore).where(
             DriftScore.filing_id == next_filing.id,
@@ -102,37 +122,6 @@ def _has_bad_outcome(
             next_neg = nd.sentiment_delta.get("negative", 0.0)
             if isinstance(next_neg, (int, float)) and next_neg > 0.05:
                 return True
-
-    # Check 2: New critical risk phrases appeared
-    current_phrases = set(
-        db_session.execute(
-            select(KeyPhrase.phrase).where(
-                KeyPhrase.filing_id == current_filing.id,
-                KeyPhrase.status == "appeared",
-            )
-        ).scalars().all()
-    )
-    next_phrases = set(
-        db_session.execute(
-            select(KeyPhrase.phrase).where(
-                KeyPhrase.filing_id == next_filing.id,
-                KeyPhrase.status == "appeared",
-            )
-        ).scalars().all()
-    )
-    new_phrases = next_phrases - current_phrases
-    if len(new_phrases) >= 3:
-        return True
-
-    # Check 3: Alert generated for the next filing
-    alert_count = db_session.execute(
-        select(Alert.id).where(
-            Alert.filing_id == next_filing.id,
-            Alert.company_id == company_id,
-        )
-    ).scalars().all()
-    if len(alert_count) > 0:
-        return True
 
     return False
 
@@ -422,6 +411,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="LexDrift Backtesting Framework")
     parser.add_argument("--ticker", default=None, help="Backtest a single ticker (default: all)")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Run weight calibration and save to data/calibrated_weights.json")
     args = parser.parse_args()
 
     session = _get_sync_session()
@@ -429,5 +420,19 @@ if __name__ == "__main__":
         result = backtest_drift_vs_outcomes(session, ticker=args.ticker)
         report = generate_backtest_report(result)
         print(report)
+
+        if args.calibrate:
+            print("\nRunning weight calibration...")
+            outcomes = compute_filing_outcomes(session)
+            if outcomes:
+                weights = calibrate_risk_weights(outcomes)
+                out_path = Path("data/calibrated_weights.json")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(weights, indent=2))
+                print(f"Calibrated weights saved to {out_path}:")
+                for k, v in weights.items():
+                    print(f"  {k}: {v:.6f}")
+            else:
+                print("No filing outcomes available for calibration.")
     finally:
         session.close()

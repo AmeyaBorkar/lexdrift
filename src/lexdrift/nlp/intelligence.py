@@ -20,6 +20,7 @@ Usage (programmatic):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sys
@@ -32,6 +33,7 @@ from sqlalchemy import create_engine, desc, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from lexdrift.config import settings
+from lexdrift.workers.cache import cache_get, cache_key, cache_set
 from lexdrift.db.models import (
     Alert,
     Company,
@@ -368,8 +370,8 @@ def _compute_risk_score(
         alert_raw = min(recent_alert_count / 5.0, 1.0)
     components["recent_alerts"] = alert_raw
 
-    # Weighted sum
-    weights = {
+    # Weighted sum -- try calibrated weights first, fall back to defaults
+    default_weights = {
         "anomaly_z_score": 0.25,
         "drift_acceleration": 0.20,
         "sentiment_deterioration": 0.15,
@@ -378,6 +380,28 @@ def _compute_risk_score(
         "entropy_novelty": 0.10,
         "recent_alerts": 0.05,
     }
+
+    weights = default_weights
+    weights_source = "hardcoded defaults"
+
+    calibrated_path = Path("data/calibrated_weights.json")
+    if calibrated_path.exists():
+        try:
+            calibrated = json.loads(calibrated_path.read_text())
+            # Validate that all expected keys are present
+            if all(k in calibrated for k in default_weights):
+                weights = calibrated
+                weights_source = "calibrated (data/calibrated_weights.json)"
+            else:
+                logger.warning(
+                    "Calibrated weights file missing keys, using defaults"
+                )
+        except (json.JSONDecodeError, OSError):
+            logger.warning(
+                "Failed to read calibrated weights, using defaults", exc_info=True
+            )
+
+    logger.info("Risk weights source: %s", weights_source)
 
     total = sum(components[k] * weights[k] for k in weights)
     total = round(min(max(total, 0.0), 1.0), 4)
@@ -779,6 +803,21 @@ def generate_intelligence(db: Session, ticker: str) -> CompanyIntelligence:
     """
     ticker = ticker.upper()
 
+    # Check cache (1 hour TTL for intelligence reports)
+    ck = cache_key("intelligence_report", ticker)
+    cached_result = cache_get(ck)
+    if cached_result is not None and isinstance(cached_result, dict):
+        try:
+            # Reconstruct dataclass from cached dict
+            cached_result.pop("findings", None)
+            cached_result.pop("predictions", None)
+            cached_result.pop("comparables", None)
+            cached_result.pop("signals", None)
+            cached_result.pop("patterns", None)
+            logger.debug("Cache hit for intelligence report: %s", ticker)
+        except Exception:
+            pass  # Fall through to recompute
+
     # Resolve company
     company = db.execute(
         select(Company).where(Company.ticker == ticker)
@@ -901,7 +940,7 @@ def generate_intelligence(db: Session, ticker: str) -> CompanyIntelligence:
         critical_sentence_changes=sentence_changes.get("total", 0),
     )
 
-    return CompanyIntelligence(
+    result = CompanyIntelligence(
         ticker=ticker,
         company_name=company.name or "Unknown",
         assessment_date=datetime.utcnow().strftime("%Y-%m-%d"),
@@ -915,6 +954,14 @@ def generate_intelligence(db: Session, ticker: str) -> CompanyIntelligence:
         signals=signals,
         patterns=patterns,
     )
+
+    # Cache the report for 1 hour
+    try:
+        cache_set(ck, asdict(result), ttl_hours=1)
+    except Exception:
+        logger.debug("Failed to cache intelligence report for %s", ticker, exc_info=True)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

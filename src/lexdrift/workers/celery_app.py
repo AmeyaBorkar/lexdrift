@@ -5,6 +5,7 @@ the central config module so a single .env controls everything.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from lexdrift.config import settings
 
@@ -33,6 +34,10 @@ app.conf.update(
             "task": "lexdrift.workers.monitor.poll_edgar",
             "schedule": 1800.0,  # every 30 minutes
         },
+        "run-daily-pipeline": {
+            "task": "lexdrift.workers.pipeline.run_daily_pipeline",
+            "schedule": crontab(hour=6, minute=0),  # every day at 6 AM UTC
+        },
     },
     # Reliability
     task_acks_late=True,
@@ -40,4 +45,4 @@ app.conf.update(
 )
 
 # Auto-discover tasks in worker modules
-app.autodiscover_tasks(["lexdrift.workers.ingest", "lexdrift.workers.analyze", "lexdrift.workers.monitor"])
+app.autodiscover_tasks(["lexdrift.workers.ingest", "lexdrift.workers.analyze", "lexdrift.workers.monitor", "lexdrift.workers.pipeline"])
