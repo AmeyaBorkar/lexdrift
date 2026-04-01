@@ -16,7 +16,12 @@
       "Bash(python -c \"from lexdrift.main import app; print\\('Routes:'\\); [print\\(f'  {r.methods} {r.path}'\\) for r in app.routes]\")",
       "Bash(python -c ':*)",
       "Bash(python -m pytest tests/ -v)",
-      "Bash(grep -v \"^Loading\\\\|^Warning\\\\|^$\\\\|warnings\")"
+      "Bash(grep -v \"^Loading\\\\|^Warning\\\\|^$\\\\|warnings\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/nlp/contagion.py'\\).read\\(\\)\\); print\\('contagion.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/nlp/latent_space.py'\\).read\\(\\)\\); print\\('latent_space.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/training/finetune.py'\\).read\\(\\)\\); print\\('finetune.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/training/__init__.py'\\).read\\(\\)\\); print\\('training/__init__.py: OK'\\)\")",
+      "Bash(ls -la \"C:/Users/ameya/Documents/FiananceProject/lexdrift/src/lexdrift/nlp/\"*.py)"
     ]
   }
 }

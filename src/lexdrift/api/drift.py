@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lexdrift.db.models import Company, DriftScore, Filing, Section, KeyPhrase, SentenceChange
 from lexdrift.db.session import get_db
 from lexdrift.edgar.tickers import lookup_ticker
+from lexdrift.nlp.anomaly import detect_anomaly, detect_trends
 from lexdrift.nlp.diff import unified_diff, diff_stats
 from lexdrift.nlp.drift import compute_drift
 from lexdrift.nlp.phrases import compare_phrases
@@ -156,6 +157,66 @@ async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
         })
 
     filing.status = "analyzed"
+    await db.flush()
+
+    # ------------------------------------------------------------------
+    # Anomaly detection: compare this filing's drift against history
+    # ------------------------------------------------------------------
+    anomaly_results = {}
+    trend_result = {}
+
+    if results:
+        # Fetch all historical drift scores for this company
+        history_stmt = (
+            select(DriftScore.section_type, DriftScore.cosine_distance, DriftScore.sentiment_delta)
+            .join(Filing, DriftScore.filing_id == Filing.id)
+            .where(
+                DriftScore.company_id == filing.company_id,
+                DriftScore.filing_id != filing.id,  # exclude current
+            )
+            .order_by(Filing.filing_date)
+        )
+        history_result = await db.execute(history_stmt)
+        history_rows = history_result.all()
+
+        # Group history by section type
+        history_by_section: dict[str, list[float]] = {}
+        sentiment_history_all: list[dict[str, float]] = []
+        drift_history_all: list[float] = []
+
+        for row in history_rows:
+            history_by_section.setdefault(row.section_type, []).append(row.cosine_distance)
+            if row.cosine_distance is not None:
+                drift_history_all.append(row.cosine_distance)
+            if row.sentiment_delta:
+                sentiment_history_all.append(row.sentiment_delta)
+
+        # Run anomaly detection per section
+        for section_result in results:
+            section_type = section_result["section_type"]
+            current_drift = section_result["cosine_distance"]
+            company_history = history_by_section.get(section_type, [])
+
+            anomaly = detect_anomaly(
+                current_drift=current_drift,
+                company_history=company_history,
+                sector_history=None,  # sector data not yet available
+            )
+            anomaly_results[section_type] = {
+                "company_z_score": anomaly.company_z_score,
+                "sector_z_score": anomaly.sector_z_score,
+                "is_anomalous": anomaly.is_anomalous,
+                "anomaly_level": anomaly.anomaly_level,
+                "company_mean": anomaly.company_mean,
+                "company_stddev": anomaly.company_stddev,
+            }
+
+        # Run trend detection across all sections (aggregate view)
+        trend_result = detect_trends(
+            drift_history=drift_history_all,
+            sentiment_history=sentiment_history_all if sentiment_history_all else None,
+        )
+
     await db.commit()
 
     return {
@@ -164,6 +225,8 @@ async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
         "form_type": filing.form_type,
         "sections_analyzed": len(results),
         "results": results,
+        "anomaly": anomaly_results,
+        "trends": trend_result,
     }
 
 
