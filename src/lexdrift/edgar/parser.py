@@ -92,14 +92,18 @@ def _try_ixbrl_extraction(html_text: str) -> dict[str, str] | None:
     """
     soup = BeautifulSoup(html_text, "lxml")
 
-    # Look for ix:nonNumeric tags (iXBRL text blocks)
-    ix_tags = soup.find_all(["ix:nonnumeric", "ix:nonnumeric"])
+    # Look for ix:nonNumeric tags (iXBRL text blocks) — include case variations
+    # and ix:nonfraction for numeric data that may contain section references
+    ix_tags = soup.find_all(["ix:nonnumeric", "ix:nonNumeric", "ix:nonfraction"])
     if not ix_tags:
-        # Try with namespace prefix variations
+        # Try with namespace prefix variations — search specifically for tags
+        # with name attributes containing known iXBRL prefixes, not all named elements
+        _IXBRL_PREFIXES = ("us-gaap:", "dei:", "srt:", "country:")
         ix_tags = soup.find_all(attrs={"name": True})
         ix_tags = [
             tag for tag in ix_tags
-            if any(key in str(tag.get("name", "")) for key in IXBRL_SECTION_MAP)
+            if any(str(tag.get("name", "")).startswith(prefix) for prefix in _IXBRL_PREFIXES)
+            and any(key in str(tag.get("name", "")) for key in IXBRL_SECTION_MAP)
         ]
 
     if not ix_tags:

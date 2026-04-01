@@ -19,6 +19,10 @@ from lexdrift.nlp.tokenizer import sentence_split
 
 logger = logging.getLogger(__name__)
 
+# Cap sentence count to avoid NxN memory explosion on very large sections.
+# When exceeded, keep first half + last half to preserve both beginning and end.
+MAX_SENTENCES = 300
+
 # Thresholds for sentence classification
 MATCH_THRESHOLD = 0.85   # above this = "unchanged" (same sentence, maybe minor edits)
 CHANGE_THRESHOLD = 0.55  # between this and MATCH_THRESHOLD = "changed" (same topic, different meaning)
@@ -87,6 +91,21 @@ def compare_sentences(
     """
     prev_sentences = sentence_split(prev_text)
     curr_sentences = sentence_split(curr_text)
+
+    # Cap sentence count to avoid NxN memory explosion on very large sections.
+    # Keep first half + last half to preserve both beginning and end of section.
+    def _truncate(sentences: list[str]) -> list[str]:
+        if len(sentences) <= MAX_SENTENCES:
+            return sentences
+        half = MAX_SENTENCES // 2
+        logger.warning(
+            f"Truncating {len(sentences)} sentences to {MAX_SENTENCES} "
+            f"(first {half} + last {half})"
+        )
+        return sentences[:half] + sentences[-half:]
+
+    prev_sentences = _truncate(prev_sentences)
+    curr_sentences = _truncate(curr_sentences)
 
     if not prev_sentences and not curr_sentences:
         return _empty_result()

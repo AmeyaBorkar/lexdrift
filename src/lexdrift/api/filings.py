@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+import re
+from pathlib import Path as FilePath
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,17 +11,28 @@ from lexdrift.edgar.filings import build_document_url, download_filing, get_fili
 from lexdrift.edgar.parser import parse_filing
 from lexdrift.edgar.tickers import lookup_ticker
 
+VALID_FORM_TYPES = {"10-K", "10-Q", "8-K", "10-K/A", "10-Q/A"}
+_TICKER_RE = re.compile(r"^[A-Za-z0-9]{1,10}$")
+
 router = APIRouter(prefix="/filings", tags=["filings"])
 
 
 @router.post("/ingest/{ticker}")
 async def ingest_filings(
     ticker: str,
-    form_type: str = "10-K",
-    limit: int = 5,
+    form_type: str = Query("10-K", description="SEC form type"),
+    limit: int = Query(5, ge=1, le=20, description="Max filings to ingest (1-20)"),
     db: AsyncSession = Depends(get_db),
 ):
     """Ingest filings for a company: download, parse, and store sections."""
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Ticker must be alphanumeric and at most 10 characters")
+    if form_type not in VALID_FORM_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid form_type '{form_type}'. Must be one of: {', '.join(sorted(VALID_FORM_TYPES))}",
+        )
+
     info = await lookup_ticker(ticker)
     if not info:
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
@@ -52,15 +66,21 @@ async def ingest_filings(
             ingested.append({"accession": f_meta["accession_number"], "status": "error", "error": str(e)})
             continue
 
-        # Create filing record
+        # Save raw HTML to disk instead of storing in DB
+        filing_dir = FilePath("data/filings") / info["cik"]
+        filing_dir.mkdir(parents=True, exist_ok=True)
+        html_path = filing_dir / f"{f_meta['accession_number']}.html"
+        html_path.write_text(html, encoding="utf-8")
+
+        # Create filing record (raw_text=None to keep DB small)
         filing = Filing(
             company_id=company.id,
             accession_number=f_meta["accession_number"],
             form_type=f_meta["form_type"],
             filing_date=f_meta["filing_date"],
             report_date=f_meta["report_date"],
-            document_url=doc_url,
-            raw_text=html,
+            document_url=str(html_path),
+            raw_text=None,
             status="parsed",
         )
         db.add(filing)

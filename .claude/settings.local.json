@@ -37,7 +37,12 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/main.py'\\).read\\(\\)\\); print\\('main.py: syntax OK'\\)\")",
       "Bash(python -m pytest tests/ -v --tb=short)",
       "Bash(find \"C:\\\\Users\\\\ameya\\\\Documents\\\\FiananceProject\\\\lexdrift/tests\" -name \"test_*.py\" -exec wc -l {} +)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(rm:*)",
+      "Bash(curl -s \"http://127.0.0.1:8000/companies?q=A\")",
+      "Bash(curl -s \"http://127.0.0.1:8000/research/kinematics/XOM\")",
+      "Bash(curl -s \"http://127.0.0.1:8000/research/overview/XOM\")",
+      "Bash(taskkill //F //IM python.exe)"
     ]
   }
 }

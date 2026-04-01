@@ -38,7 +38,11 @@ class Company(Base):
 
 class Filing(Base):
     __tablename__ = "filings"
-    __table_args__ = (Index("ix_filings_company_date", "company_id", "filing_date"),)
+    __table_args__ = (
+        Index("ix_filings_company_date", "company_id", "filing_date"),
+        Index("ix_filings_form_type", "form_type"),
+        Index("ix_filings_status", "status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
@@ -82,6 +86,7 @@ class DriftScore(Base):
     __tablename__ = "drift_scores"
     __table_args__ = (
         UniqueConstraint("filing_id", "section_type", name="uq_drift_filing_section"),
+        Index("ix_drift_scores_company_id", "company_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -146,6 +151,10 @@ class Alert(Base):
 
 class KeyPhrase(Base):
     __tablename__ = "key_phrases"
+    __table_args__ = (
+        Index("ix_key_phrases_filing_id", "filing_id"),
+        Index("ix_key_phrases_filing_section", "filing_id", "section_type"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     filing_id: Mapped[int] = mapped_column(ForeignKey("filings.id"), nullable=False)

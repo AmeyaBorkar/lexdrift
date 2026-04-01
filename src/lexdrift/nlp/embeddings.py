@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import numpy as np
 
@@ -8,13 +9,17 @@ logger = logging.getLogger(__name__)
 
 _model = None
 _embedding_dim: int | None = None
-
+_model_lock = threading.Lock()
 
 
 def _get_model():
-    """Lazy-load the sentence-transformer model."""
+    """Lazy-load the sentence-transformer model (thread-safe)."""
     global _model, _embedding_dim
-    if _model is None:
+    if _model is not None:
+        return _model
+    with _model_lock:
+        if _model is not None:  # double-check after acquiring lock
+            return _model
         from sentence_transformers import SentenceTransformer
 
         logger.info(f"Loading embedding model: {settings.embedding_model}")
