@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     ngram_top_k: int = 30
     priority_phrases_path: str = "data/default_phrases.json"
 
+    # LLM (Groq — free tier, Llama 3.3 70B)
+    groq_api_key: str = ""
+    llm_model: str = "llama-3.3-70b-versatile"
+    llm_enabled: bool = True
+
     # Alerts
     drift_threshold: float = 0.15
     sentiment_stddev_multiplier: float = 2.0

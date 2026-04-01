@@ -616,12 +616,13 @@ async def get_market_intelligence(
     import dataclasses as _dc
 
     intel = await generate_market_intelligence(db)
-    narrative = generate_market_narrative(intel)
+    result = _dc.asdict(intel)
 
-    return {
-        **_dc.asdict(intel),
-        "narrative": narrative,
-    }
+    # LLM-reasoned narrative (falls back to template)
+    from lexdrift.nlp.reasoning import reason_about_market
+    result["narrative"] = reason_about_market(result)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -686,4 +687,10 @@ async def get_intelligence(
     finally:
         sync_session.close()
 
-    return dataclasses.asdict(intel)
+    result = dataclasses.asdict(intel)
+
+    # Generate LLM-reasoned narrative (falls back to template if no API key)
+    from lexdrift.nlp.reasoning import reason_about_company
+    result["narrative"] = reason_about_company(result)
+
+    return result
