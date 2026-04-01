@@ -19,10 +19,10 @@ type SortDirection = "asc" | "desc";
 
 function SkeletonRow() {
   return (
-    <tr className="border-b border-[#1a1a1a]">
+    <tr className="border-b border-border">
       {Array.from({ length: 5 }).map((_, i) => (
         <td key={i} className="px-4 py-3">
-          <div className="h-4 rounded bg-[#1a1a1a] animate-pulse" />
+          <div className="h-4 rounded bg-muted animate-pulse" />
         </td>
       ))}
     </tr>
@@ -89,114 +89,112 @@ export default function ScreenerPage() {
     SECTION_TYPES.find((s) => s.value === sectionType)?.label ?? sectionType;
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5]">
-      <div className="mx-auto max-w-7xl px-6 py-10">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Screener</h1>
-            <p className="text-sm text-[#737373] mt-1">
-              Companies ranked by language drift
-            </p>
-          </div>
-
-          <div className="relative">
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              className="flex items-center gap-2 rounded-md border border-[#1a1a1a] bg-[#111111] px-3 py-2 text-sm text-[#e5e5e5] hover:border-[#c8a97e]/40 transition-colors"
-            >
-              {selectedLabel}
-              <ChevronDown className="h-3.5 w-3.5 text-[#737373]" />
-            </button>
-            {dropdownOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] rounded-md border border-[#1a1a1a] bg-[#111111] py-1">
-                {SECTION_TYPES.map((s) => (
-                  <button
-                    key={s.value}
-                    onClick={() => {
-                      setSectionType(s.value);
-                      setDropdownOpen(false);
-                    }}
-                    className={`block w-full text-left px-3 py-1.5 text-sm transition-colors ${
-                      sectionType === s.value
-                        ? "text-[#c8a97e]"
-                        : "text-[#e5e5e5] hover:text-[#c8a97e] hover:bg-[#1a1a1a]"
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+    <div className="mx-auto max-w-7xl space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Screener</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Companies ranked by language drift
+          </p>
         </div>
 
-        <div className="rounded-lg border border-[#1a1a1a] bg-[#111111] overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[#1a1a1a]">
-                  {columns.map((col) => (
-                    <th
-                      key={col.key}
-                      className={`px-4 py-3 text-left text-xs font-medium text-[#737373] uppercase tracking-wider ${
-                        col.sortable ? "cursor-pointer select-none hover:text-[#c8a97e] transition-colors" : ""
-                      }`}
-                      onClick={() =>
-                        col.sortable && col.sortKey && handleSort(col.sortKey)
-                      }
-                    >
-                      <span className="flex items-center gap-1">
-                        {col.label}
-                        {col.sortable && col.sortKey && (
-                          <ArrowUpDown
-                            className={`h-3 w-3 ${
-                              sortField === col.sortKey
-                                ? "text-[#c8a97e]"
-                                : "text-[#737373]/50"
-                            }`}
-                          />
-                        )}
-                      </span>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {loading
-                  ? Array.from({ length: 12 }).map((_, i) => (
-                      <SkeletonRow key={i} />
-                    ))
-                  : sortedData.map((row, idx) => (
-                      <tr
-                        key={row.ticker + idx}
-                        onClick={() => router.push(`/company/${row.ticker}`)}
-                        className="border-b border-[#1a1a1a] cursor-pointer hover:bg-[#1a1a1a]/50 transition-colors"
-                      >
-                        <td className="px-4 py-3 text-[#737373] font-mono text-xs">
-                          {idx + 1}
-                        </td>
-                        <td className="px-4 py-3 font-mono font-medium text-[#c8a97e]">
-                          {row.ticker}
-                        </td>
-                        <td className="px-4 py-3">{row.name}</td>
-                        <td className="px-4 py-3 font-mono">
-                          {row.cosine_distance.toFixed(4)}
-                        </td>
-                        <td className="px-4 py-3 text-[#737373]">
-                          {row.filing_date}
-                        </td>
-                      </tr>
-                    ))}
-              </tbody>
-            </table>
-          </div>
-
-          {!loading && sortedData.length === 0 && (
-            <div className="flex items-center justify-center py-16 text-sm text-[#737373]">
-              No data available for this section type.
+        <div className="relative">
+          <button
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+            className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground hover:border-accent/40 transition-colors"
+          >
+            {selectedLabel}
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+          {dropdownOpen && (
+            <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] rounded-md border border-border bg-card py-1">
+              {SECTION_TYPES.map((s) => (
+                <button
+                  key={s.value}
+                  onClick={() => {
+                    setSectionType(s.value);
+                    setDropdownOpen(false);
+                  }}
+                  className={`block w-full text-left px-3 py-1.5 text-sm transition-colors ${
+                    sectionType === s.value
+                      ? "text-accent"
+                      : "text-foreground hover:text-accent hover:bg-muted"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
             </div>
           )}
         </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border">
+                {columns.map((col) => (
+                  <th
+                    key={col.key}
+                    className={`px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider ${
+                      col.sortable ? "cursor-pointer select-none hover:text-accent transition-colors" : ""
+                    }`}
+                    onClick={() =>
+                      col.sortable && col.sortKey && handleSort(col.sortKey)
+                    }
+                  >
+                    <span className="flex items-center gap-1">
+                      {col.label}
+                      {col.sortable && col.sortKey && (
+                        <ArrowUpDown
+                          className={`h-3 w-3 ${
+                            sortField === col.sortKey
+                              ? "text-accent"
+                              : "text-muted-foreground/50"
+                          }`}
+                        />
+                      )}
+                    </span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading
+                ? Array.from({ length: 12 }).map((_, i) => (
+                    <SkeletonRow key={i} />
+                  ))
+                : sortedData.map((row, idx) => (
+                    <tr
+                      key={row.ticker + idx}
+                      onClick={() => router.push(`/company/${row.ticker}`)}
+                      className="border-b border-border cursor-pointer hover:bg-muted/50 transition-colors"
+                    >
+                      <td className="px-4 py-3 text-muted-foreground font-mono text-xs">
+                        {idx + 1}
+                      </td>
+                      <td className="px-4 py-3 font-mono font-medium text-accent">
+                        {row.ticker}
+                      </td>
+                      <td className="px-4 py-3 text-foreground">{row.name}</td>
+                      <td className="px-4 py-3 font-mono text-foreground">
+                        {row.cosine_distance.toFixed(4)}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {row.filing_date}
+                      </td>
+                    </tr>
+                  ))}
+            </tbody>
+          </table>
+        </div>
+
+        {!loading && sortedData.length === 0 && (
+          <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+            No data available for this section type.
+          </div>
+        )}
       </div>
 
       {dropdownOpen && (

@@ -1,5 +1,6 @@
 "use client";
 
+import { useTheme } from "next-themes";
 import {
   LineChart,
   Line,
@@ -19,9 +20,9 @@ interface ChartPoint {
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-md border border-[#1a1a1a] bg-[#111111] px-3 py-2 shadow-sm">
-      <p className="text-xs text-[#737373] mb-1">{label}</p>
-      <p className="text-sm font-mono text-[#c8a97e]">
+    <div className="rounded-md border border-border bg-card px-3 py-2 shadow-sm">
+      <p className="text-xs text-muted-foreground mb-1">{label}</p>
+      <p className="text-sm font-mono text-accent">
         {Number(payload[0].value).toFixed(4)}
       </p>
     </div>
@@ -29,9 +30,17 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 export default function DriftChart({ data }: { data: DriftScore[] }) {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
+
+  // Use CSS variable-compatible colors for chart elements
+  const gridColor = isDark ? "#1a1a1a" : "#e8e5e0";
+  const tickColor = isDark ? "#737373" : "#6b6b6b";
+  const dotStrokeColor = isDark ? "#0a0a0a" : "#fafaf8";
+
   if (!data || data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64 text-sm text-[#737373]">
+      <div className="flex items-center justify-center h-64 text-sm text-muted-foreground">
         No timeline data available.
       </div>
     );
@@ -55,18 +64,18 @@ export default function DriftChart({ data }: { data: DriftScore[] }) {
       >
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke="#1a1a1a"
+          stroke={gridColor}
           vertical={false}
         />
         <XAxis
           dataKey="filing_date"
-          tick={{ fontSize: 11, fill: "#737373" }}
-          axisLine={{ stroke: "#1a1a1a" }}
+          tick={{ fontSize: 11, fill: tickColor }}
+          axisLine={{ stroke: gridColor }}
           tickLine={false}
         />
         <YAxis
-          tick={{ fontSize: 11, fill: "#737373" }}
-          axisLine={{ stroke: "#1a1a1a" }}
+          tick={{ fontSize: 11, fill: tickColor }}
+          axisLine={{ stroke: gridColor }}
           tickLine={false}
           width={50}
         />
@@ -76,8 +85,8 @@ export default function DriftChart({ data }: { data: DriftScore[] }) {
           dataKey="cosine_distance"
           stroke="#c8a97e"
           strokeWidth={2}
-          dot={{ r: 3, fill: "#c8a97e", stroke: "#0a0a0a", strokeWidth: 2 }}
-          activeDot={{ r: 5, fill: "#c8a97e", stroke: "#0a0a0a", strokeWidth: 2 }}
+          dot={{ r: 3, fill: "#c8a97e", stroke: dotStrokeColor, strokeWidth: 2 }}
+          activeDot={{ r: 5, fill: "#c8a97e", stroke: dotStrokeColor, strokeWidth: 2 }}
         />
       </LineChart>
     </ResponsiveContainer>
