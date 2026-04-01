@@ -22,6 +22,7 @@ router = APIRouter(tags=["drift"])
 @router.post("/filings/{filing_id}/analyze")
 async def analyze_filing(
     filing_id: int = Path(..., gt=0, description="Filing ID (must be positive)"),
+    force: bool = Query(False, description="Force re-analysis by deleting existing results"),
     db: AsyncSession = Depends(get_db),
 ):
     """Run NLP drift analysis on a filing, comparing against the previous filing."""
@@ -33,7 +34,35 @@ async def analyze_filing(
         raise HTTPException(status_code=404, detail="Filing not found")
 
     if filing.status == "analyzed":
-        raise HTTPException(status_code=409, detail="Filing has already been analyzed")
+        if not force:
+            raise HTTPException(status_code=409, detail="Filing has already been analyzed")
+
+        # Force re-analysis: delete existing results and reset status
+        logger.info("Force re-analysis requested for filing %s; clearing existing results", filing_id)
+
+        # Delete SentenceChange records (must go first due to FK on drift_scores)
+        existing_drift_ids_stmt = select(DriftScore.id).where(DriftScore.filing_id == filing_id)
+        existing_drift_ids = (await db.execute(existing_drift_ids_stmt)).scalars().all()
+        if existing_drift_ids:
+            await db.execute(
+                SentenceChange.__table__.delete().where(
+                    SentenceChange.drift_score_id.in_(existing_drift_ids)
+                )
+            )
+
+        # Delete DriftScore records for this filing
+        await db.execute(
+            DriftScore.__table__.delete().where(DriftScore.filing_id == filing_id)
+        )
+
+        # Delete KeyPhrase records for this filing
+        await db.execute(
+            KeyPhrase.__table__.delete().where(KeyPhrase.filing_id == filing_id)
+        )
+
+        # Reset filing status to parsed
+        filing.status = "parsed"
+        await db.flush()
 
     # Find previous filing of same form type for this company
     stmt = (
