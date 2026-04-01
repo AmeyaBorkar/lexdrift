@@ -286,7 +286,7 @@ def step_ingest(tickers: list[str], limit: int) -> dict:
 # Step 2: Analyze filings
 # ---------------------------------------------------------------------------
 
-def step_analyze(filing_ids: list[int] | None = None) -> dict:
+def step_analyze(filing_ids: list[int] | None = None, force: bool = False) -> dict:
     """Run drift analysis on filings. If no IDs given, analyze all un-analyzed."""
     from sqlalchemy import select
 
@@ -306,7 +306,7 @@ def step_analyze(filing_ids: list[int] | None = None) -> dict:
         _info("No filings to analyze")
         return {"analyzed": 0, "failed": 0}
 
-    _info(f"Analyzing {len(filing_ids)} filings...")
+    _info(f"Analyzing {len(filing_ids)} filings (force={force})...")
 
     # Import the analysis function (avoids Celery dependency at module level)
     from lexdrift.workers.analyze import _do_analyze
@@ -319,7 +319,7 @@ def step_analyze(filing_ids: list[int] | None = None) -> dict:
             break
 
         try:
-            result = _do_analyze(fid)
+            result = _do_analyze(fid, force=force)
             stats["analyzed"] += 1
             sections = result.get("sections_analyzed", 0)
             if i % 10 == 0 or i == len(filing_ids):
@@ -442,7 +442,7 @@ def step_reanalyze() -> dict:
         return {"analyzed": 0, "failed": 0}
 
     _info(f"Re-analyzing {len(filing_ids)} filings with improved models...")
-    return step_analyze(filing_ids)
+    return step_analyze(filing_ids, force=True)
 
 
 # ---------------------------------------------------------------------------

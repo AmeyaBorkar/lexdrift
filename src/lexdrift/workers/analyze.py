@@ -68,7 +68,7 @@ def analyze_filing(self, filing_id: int):
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
 
 
-def _do_analyze(filing_id: int) -> dict:
+def _do_analyze(filing_id: int, force: bool = False) -> dict:
     with SyncSessionFactory() as session:
         # 1. Load the target filing
         filing = session.execute(
@@ -77,6 +77,33 @@ def _do_analyze(filing_id: int) -> dict:
 
         if filing is None:
             raise ValueError(f"Filing {filing_id} not found")
+
+        # Clean up existing analysis if force=True or if re-running
+        existing_drift = session.execute(
+            select(DriftScore.id).where(DriftScore.filing_id == filing_id)
+        ).scalars().all()
+        if existing_drift:
+            if not force and filing.status == "analyzed":
+                # Skip silently — already done
+                return {
+                    "filing_id": filing_id,
+                    "message": "Already analyzed (use force=True to re-analyze)",
+                    "sections_analyzed": 0,
+                }
+            # Delete old records to avoid UNIQUE constraint violations
+            for ds_id in existing_drift:
+                session.execute(
+                    SentenceChange.__table__.delete().where(
+                        SentenceChange.drift_score_id == ds_id
+                    )
+                )
+            session.execute(
+                DriftScore.__table__.delete().where(DriftScore.filing_id == filing_id)
+            )
+            session.execute(
+                KeyPhrase.__table__.delete().where(KeyPhrase.filing_id == filing_id)
+            )
+            session.flush()
 
         # 2. Find the previous filing of the same form type for this company
         prev_filing = session.execute(
