@@ -2,6 +2,7 @@ import logging
 
 import numpy as np
 
+from lexdrift.nlp.boilerplate import classify_boilerplate
 from lexdrift.nlp.embeddings import bytes_to_embedding, cosine_distance, encode_text, embedding_to_bytes
 from lexdrift.nlp.risk import score_changes
 from lexdrift.nlp.sentences import compare_sentences
@@ -159,6 +160,22 @@ def compute_drift(
             "critical_changes": 0,
             "high_risk_changes": 0,
         })
+
+    # Boilerplate classification on added sentences — auxiliary, degrade gracefully
+    try:
+        added_sentences = [e["text"] for e in scored_changes.get("added", []) if e.get("text")]
+        if added_sentences:
+            bp_results = classify_boilerplate(added_sentences)
+            for entry, bp in zip(scored_changes["added"], bp_results):
+                entry["boilerplate"] = {
+                    "is_boilerplate": bp["is_boilerplate"],
+                    "confidence": bp["confidence"],
+                }
+                if bp["is_boilerplate"]:
+                    entry.setdefault("risk", {})["level"] = "boilerplate"
+                    entry.setdefault("risk", {})["score"] = 0.05
+    except Exception:
+        logger.warning("Boilerplate classification failed", exc_info=True)
 
     return {
         "cosine_distance": cos_dist,

@@ -22,6 +22,8 @@ from lexdrift.db.models import (
     SentenceChange,
 )
 from lexdrift.nlp.drift import compute_drift
+from lexdrift.nlp.entropy import compute_filing_entropy
+from lexdrift.nlp.obfuscation import detect_obfuscation
 from lexdrift.nlp.phrases import compare_phrases
 from lexdrift.workers.celery_app import app
 
@@ -257,6 +259,52 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     phrase=entry["phrase"],
                     status="disappeared",
                 ))
+
+            # 4d. Obfuscation detection (matches API endpoint behavior)
+            # No dedicated DB column; log results for now.
+            try:
+                obfuscation = detect_obfuscation(
+                    prev_section.section_text, curr_section.section_text
+                )
+                logger.info(
+                    "Obfuscation for filing %s, section '%s': score=%.4f, "
+                    "density_change=%.4f, specificity_change=%.4f, "
+                    "euphemisms=%d",
+                    filing_id, section_type,
+                    obfuscation.overall_obfuscation_score,
+                    obfuscation.density_change,
+                    obfuscation.specificity_change,
+                    len(obfuscation.detected_euphemisms),
+                )
+            except Exception:
+                logger.warning(
+                    "Obfuscation detection failed for filing %s, section '%s'",
+                    filing_id, section_type,
+                    exc_info=True,
+                )
+
+            # 4e. Entropy / information-theoretic analysis (matches API endpoint)
+            # No dedicated DB column; log results for now.
+            try:
+                entropy = compute_filing_entropy(
+                    prev_section.section_text, curr_section.section_text
+                )
+                logger.info(
+                    "Entropy for filing %s, section '%s': KL=%.4f, "
+                    "novelty=%.4f, entropy_rate_change=%.4f, "
+                    "vocab_overlap=%.4f",
+                    filing_id, section_type,
+                    entropy.kl_divergence,
+                    entropy.novelty_score,
+                    entropy.entropy_rate_change,
+                    entropy.vocab_overlap,
+                )
+            except Exception:
+                logger.warning(
+                    "Entropy analysis failed for filing %s, section '%s'",
+                    filing_id, section_type,
+                    exc_info=True,
+                )
 
             sections_analyzed += 1
             logger.info(

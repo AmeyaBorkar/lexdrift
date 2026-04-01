@@ -14,11 +14,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import numpy as np
+
 from lexdrift.db.models import Company, DriftScore, Filing, Section
 from lexdrift.db.session import get_db
 from lexdrift.edgar.tickers import lookup_ticker
 from lexdrift.nlp.anomaly import detect_anomaly, detect_trends
+from lexdrift.nlp.contagion import build_risk_graph, compute_systemic_risk
+from lexdrift.nlp.embeddings import bytes_to_embedding
 from lexdrift.nlp.entropy import compute_filing_entropy
+from lexdrift.nlp.latent_space import build_latent_space
 from lexdrift.nlp.obfuscation import detect_obfuscation
 from lexdrift.nlp.velocity import compute_semantic_kinematics
 
@@ -397,4 +402,192 @@ async def get_overview(
         "anomaly": anomaly_by_section,
         "kinematics": kinematics_by_section,
         "trends": trends,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /research/contagion/{ticker}
+# ---------------------------------------------------------------------------
+
+@router.get("/contagion/{ticker}")
+async def get_contagion(
+    ticker: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Build a risk contagion graph and compute systemic risk metrics.
+
+    Retrieves the latest risk_factors section text for ALL companies in the
+    database, builds an inter-company similarity graph, and returns graph
+    statistics, systemic risk metrics, and this company's centrality and
+    connections.
+
+    NOTE: This is an expensive operation that encodes all companies' risk
+    factor sections. In production this should be cached or pre-computed
+    on a schedule.
+    """
+    company = await _resolve_company(ticker, db)
+
+    # Fetch the latest risk_factors section text for every company.
+    # We join Section -> Filing and pick the most recent filing per company
+    # that has a risk_factors section with text.
+    stmt = (
+        select(
+            Section.section_text,
+            Filing.company_id,
+            Filing.filing_date,
+        )
+        .join(Filing, Section.filing_id == Filing.id)
+        .where(
+            Section.section_type == "risk_factors",
+            Section.section_text.isnot(None),
+        )
+        .order_by(desc(Filing.filing_date))
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="No risk factor sections found in database. Ingest filings first.",
+        )
+
+    # Keep only the latest section per company
+    company_sections: dict[int, str] = {}
+    for row in rows:
+        if row.company_id not in company_sections:
+            company_sections[row.company_id] = row.section_text
+
+    if company.id not in company_sections:
+        raise HTTPException(
+            status_code=404,
+            detail="No risk factor section found for this company.",
+        )
+
+    # Build the risk contagion graph
+    graph = build_risk_graph(company_sections)
+    systemic = compute_systemic_risk(graph)
+
+    # Extract this company's centrality and connections
+    company_centrality = systemic.betweenness_centrality.get(company.id, 0.0)
+    company_clustering = systemic.clustering_coefficients.get(company.id, 0.0)
+    company_connections = []
+    if company.id in graph:
+        for neighbor in graph.neighbors(company.id):
+            edge_data = graph.get_edge_data(company.id, neighbor)
+            company_connections.append({
+                "company_id": neighbor,
+                "similarity": round(edge_data["weight"], 4) if edge_data else 0.0,
+            })
+        company_connections.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Serialize community sets to lists for JSON
+    communities_serialized = [sorted(c) for c in systemic.modularity_communities]
+
+    return {
+        "ticker": ticker,
+        "company": company.name,
+        "graph_stats": {
+            "node_count": graph.number_of_nodes(),
+            "edge_count": graph.number_of_edges(),
+            "density": systemic.density,
+            "connected_components": systemic.connected_components,
+            "largest_component_fraction": systemic.largest_component_fraction,
+            "average_path_length": systemic.average_path_length,
+        },
+        "systemic_risk": {
+            "risk_hubs": systemic.risk_hubs,
+            "spectral_gap": systemic.spectral_gap,
+            "communities": communities_serialized,
+        },
+        "company_metrics": {
+            "betweenness_centrality": company_centrality,
+            "clustering_coefficient": company_clustering,
+            "is_risk_hub": company.id in systemic.risk_hubs,
+            "connections": company_connections,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /research/latent-space
+# ---------------------------------------------------------------------------
+
+@router.get("/latent-space")
+async def get_latent_space(
+    db: AsyncSession = Depends(get_db),
+):
+    """Project all section embeddings into a shared low-dimensional latent space.
+
+    Retrieves all section embeddings from the database (sections table),
+    builds a latent space projection (PCA or UMAP), and returns the 2D/3D
+    projected coordinates per company+filing for visualization.
+
+    NOTE: This is an expensive operation that processes all embeddings in the
+    database. In production this should be cached or pre-computed on a
+    schedule.
+    """
+    # Fetch all sections that have embeddings, with company_id and filing_date
+    stmt = (
+        select(
+            Section.embedding,
+            Section.section_type,
+            Filing.company_id,
+            Filing.filing_date,
+        )
+        .join(Filing, Section.filing_id == Filing.id)
+        .where(Section.embedding.isnot(None))
+        .order_by(Filing.filing_date)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="No section embeddings found in database. Run analysis first.",
+        )
+
+    # Build the input list for build_latent_space
+    section_embeddings = []
+    for row in rows:
+        try:
+            embedding = bytes_to_embedding(row.embedding)
+            section_embeddings.append({
+                "company_id": row.company_id,
+                "filing_date": row.filing_date.isoformat() if row.filing_date else "",
+                "section_type": row.section_type,
+                "embedding": embedding,
+            })
+        except Exception:
+            # Skip malformed embeddings
+            continue
+
+    if not section_embeddings:
+        raise HTTPException(
+            status_code=404,
+            detail="No valid embeddings could be decoded. Re-run analysis.",
+        )
+
+    latent = build_latent_space(section_embeddings)
+
+    # Format the output as a list of coordinate records for visualization
+    coordinates = []
+    for i in range(len(latent.company_ids)):
+        point = latent.points[i]
+        coord = {
+            "company_id": latent.company_ids[i],
+            "filing_date": latent.filing_dates[i],
+            "section_type": latent.section_types[i],
+        }
+        # Add coordinate dimensions (x, y, and optionally z)
+        for dim in range(latent.n_components):
+            coord[f"dim_{dim}"] = round(float(point[dim]), 6)
+        coordinates.append(coord)
+
+    return {
+        "projection_method": latent.projection_method,
+        "n_components": latent.n_components,
+        "total_points": len(coordinates),
+        "coordinates": coordinates,
     }

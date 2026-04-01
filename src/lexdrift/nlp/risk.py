@@ -9,12 +9,65 @@ Three scoring layers:
 1. Loughran-McDonald sentiment at the sentence level
 2. High-severity keyword proximity (domain-specific danger signals)
 3. Risk classification: critical / high / medium / low / boilerplate
+
+When a trained risk classifier model is available (models/risk_classifier.pt),
+it is used in place of the keyword-based heuristic for higher accuracy.
 """
 
+import logging
 import re
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from lexdrift.nlp.sentiment import score_sentiment
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Trained model state (lazy, thread-safe loading like embeddings.py)
+# ---------------------------------------------------------------------------
+
+_trained_model = None
+_use_trained_model: bool | None = None  # None = not yet checked
+_model_lock = threading.Lock()
+
+TRAINED_MODEL_PATH = "models/risk_classifier.pt"
+
+
+def _try_load_trained_model():
+    """Attempt to load the trained risk classifier (thread-safe, once).
+
+    Sets ``_use_trained_model`` to True/False and populates ``_trained_model``
+    if the model file exists and loads successfully.
+    """
+    global _trained_model, _use_trained_model
+    if _use_trained_model is not None:
+        return
+    with _model_lock:
+        if _use_trained_model is not None:  # double-check after acquiring lock
+            return
+        model_path = Path(TRAINED_MODEL_PATH)
+        if model_path.exists():
+            try:
+                from lexdrift.training.risk_classifier import load_risk_classifier
+                _trained_model = load_risk_classifier(str(model_path))
+                _use_trained_model = True
+                logger.info("Trained risk classifier loaded from %s", model_path)
+            except Exception:
+                logger.warning(
+                    "Failed to load trained risk classifier from %s; "
+                    "falling back to keyword-based scoring",
+                    model_path,
+                    exc_info=True,
+                )
+                _use_trained_model = False
+        else:
+            logger.debug(
+                "No trained risk classifier found at %s; using keyword-based scoring",
+                model_path,
+            )
+            _use_trained_model = False
 
 # Tiered keyword groups — ordered by severity.
 # Presence of these terms near each other escalates the risk classification.
@@ -64,8 +117,8 @@ def _find_terms(text_lower: str, term_set: set[str]) -> list[str]:
     return [term for term in term_set if term in text_lower]
 
 
-def score_sentence_risk(sentence: str) -> RiskScore:
-    """Score a single sentence for financial risk severity.
+def _score_sentence_risk_keywords(sentence: str) -> RiskScore:
+    """Keyword-based risk scoring (original heuristic fallback).
 
     Returns a RiskScore with level, numeric score, trigger terms, and sentiment.
     """
@@ -132,6 +185,53 @@ def score_sentence_risk(sentence: str) -> RiskScore:
         level="low", score=0.1,
         triggers=[], sentiment=sentiment,
     )
+
+
+# Mapping from trained model confidence to a numeric score for compatibility
+_LEVEL_SCORE_MAP = {
+    "critical": 0.95,
+    "high": 0.75,
+    "medium": 0.45,
+    "low": 0.10,
+}
+
+
+def score_sentence_risk(sentence: str) -> RiskScore:
+    """Score a single sentence for financial risk severity.
+
+    If a trained risk classifier exists at ``models/risk_classifier.pt``,
+    uses it for prediction.  Otherwise falls back to the keyword-based
+    heuristic.
+
+    Returns a RiskScore with level, numeric score, trigger terms, and sentiment.
+    """
+    _try_load_trained_model()
+
+    if _use_trained_model and _trained_model is not None:
+        try:
+            from lexdrift.training.risk_classifier import predict_risk
+
+            predictions = predict_risk([sentence], model_path=TRAINED_MODEL_PATH)
+            if predictions:
+                pred = predictions[0]
+                level = pred["predicted_level"]
+                confidence = pred["confidence"]
+                sentiment = score_sentiment(sentence)
+                return RiskScore(
+                    level=level,
+                    score=_LEVEL_SCORE_MAP.get(level, 0.1) * confidence,
+                    triggers=["trained_classifier"],
+                    sentiment=sentiment,
+                )
+        except Exception:
+            logger.warning(
+                "Trained risk classifier inference failed; "
+                "falling back to keyword-based scoring",
+                exc_info=True,
+            )
+
+    # Fallback to keyword-based scoring
+    return _score_sentence_risk_keywords(sentence)
 
 
 def score_changes(sentence_changes: dict) -> dict:

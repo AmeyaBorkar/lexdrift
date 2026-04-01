@@ -171,3 +171,128 @@ def clear_index() -> None:
     """Clear the cross-company index (for testing)."""
     global _sentence_index
     _sentence_index = []
+
+
+# ---------------------------------------------------------------------------
+# Trained boilerplate classifier integration
+# ---------------------------------------------------------------------------
+
+import threading
+from pathlib import Path
+
+_boilerplate_model = None
+_use_trained_boilerplate: bool | None = None  # None = not yet checked
+_boilerplate_lock = threading.Lock()
+
+TRAINED_BOILERPLATE_PATH = "models/boilerplate_classifier.pt"
+
+
+def _try_load_boilerplate_model():
+    """Attempt to load the trained boilerplate classifier (thread-safe, once).
+
+    Sets ``_use_trained_boilerplate`` to True/False and populates
+    ``_boilerplate_model`` if the model file exists and loads successfully.
+    """
+    global _boilerplate_model, _use_trained_boilerplate
+    if _use_trained_boilerplate is not None:
+        return
+    with _boilerplate_lock:
+        if _use_trained_boilerplate is not None:
+            return
+        model_path = Path(TRAINED_BOILERPLATE_PATH)
+        if model_path.exists():
+            try:
+                from lexdrift.training.boilerplate_classifier import (
+                    load_boilerplate_classifier,
+                )
+                _boilerplate_model = load_boilerplate_classifier(str(model_path))
+                _use_trained_boilerplate = True
+                logger.info(
+                    "Trained boilerplate classifier loaded from %s", model_path
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to load trained boilerplate classifier from %s; "
+                    "falling back to index-based uniqueness scoring",
+                    model_path,
+                    exc_info=True,
+                )
+                _use_trained_boilerplate = False
+        else:
+            logger.debug(
+                "No trained boilerplate classifier found at %s; "
+                "using index-based uniqueness scoring",
+                model_path,
+            )
+            _use_trained_boilerplate = False
+
+
+def classify_boilerplate(sentences: list[str]) -> list[dict]:
+    """Classify sentences as boilerplate or substantive.
+
+    Tries to use a trained classifier at ``models/boilerplate_classifier.pt``.
+    If the model is unavailable, falls back to the in-memory cross-company
+    index via ``compute_uniqueness()`` (which requires prior calls to
+    ``add_to_index()``).
+
+    Returns:
+        A list of dicts with keys: sentence, is_boilerplate, confidence.
+    """
+    if not sentences:
+        return []
+
+    _try_load_boilerplate_model()
+
+    if _use_trained_boilerplate and _boilerplate_model is not None:
+        try:
+            from lexdrift.training.boilerplate_classifier import predict_boilerplate
+
+            predictions = predict_boilerplate(
+                sentences, model_path=TRAINED_BOILERPLATE_PATH
+            )
+            return [
+                {
+                    "sentence": p["sentence"],
+                    "is_boilerplate": p["is_boilerplate"],
+                    "confidence": p["boilerplate_probability"]
+                    if p["is_boilerplate"]
+                    else 1.0 - p["boilerplate_probability"],
+                }
+                for p in predictions
+            ]
+        except Exception:
+            logger.warning(
+                "Trained boilerplate classifier inference failed; "
+                "falling back to index-based uniqueness scoring",
+                exc_info=True,
+            )
+
+    # Fallback: use compute_uniqueness() with the in-memory index.
+    # This requires embeddings, so we encode the sentences here.
+    results = []
+    try:
+        from lexdrift.nlp.embeddings import encode_text
+
+        for sentence in sentences:
+            embedding = encode_text(sentence)
+            # company_id=0 means "unknown" -- just checking cross-company duplication
+            uniqueness = compute_uniqueness(embedding, company_id=0)
+            results.append({
+                "sentence": sentence,
+                "is_boilerplate": uniqueness["is_boilerplate"],
+                "confidence": 1.0 - uniqueness["uniqueness_score"],
+            })
+    except Exception:
+        logger.warning(
+            "Index-based boilerplate fallback failed; "
+            "returning neutral classification",
+            exc_info=True,
+        )
+        for sentence in sentences:
+            results.append({
+                "sentence": sentence,
+                "is_boilerplate": False,
+                "confidence": 0.5,
+            })
+
+    return results

@@ -18,6 +18,7 @@ def _fake_sentiment(text: str) -> dict[str, float]:
     }
 
 
+@patch("lexdrift.nlp.risk._use_trained_model", False)
 @patch("lexdrift.nlp.risk.score_sentiment", side_effect=_fake_sentiment)
 class TestScoreSentenceRisk:
     def test_going_concern_is_critical(self, _mock_sent):

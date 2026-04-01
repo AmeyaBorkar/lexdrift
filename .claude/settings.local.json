@@ -43,7 +43,9 @@
       "Bash(curl -s \"http://127.0.0.1:8000/research/kinematics/XOM\")",
       "Bash(curl -s \"http://127.0.0.1:8000/research/overview/XOM\")",
       "Bash(taskkill //F //IM python.exe)",
-      "Bash(curl -s -X POST 'http://127.0.0.1:8000/filings/ingest/__TRACKED_VAR__?form_type=10-K&limit=3')"
+      "Bash(curl -s -X POST 'http://127.0.0.1:8000/filings/ingest/__TRACKED_VAR__?form_type=10-K&limit=3')",
+      "Bash(find:*)",
+      "Bash(python3 -c \"from lexdrift.nlp import contagion; print\\(dir\\(contagion\\)\\)\")"
     ]
   }
 }
