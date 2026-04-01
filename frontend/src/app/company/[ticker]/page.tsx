@@ -109,10 +109,10 @@ export default function CompanyPage() {
     }
   }
 
-  async function handleAnalyze(filingId: number) {
+  async function handleAnalyze(filingId: number, alreadyAnalyzed: boolean = false) {
     setAnalyzingId(filingId);
     try {
-      await analyzeFile(filingId);
+      await analyzeFile(filingId, alreadyAnalyzed ? true : undefined);
       await fetchAll();
       await fetchTimeline();
     } catch (err) {
@@ -318,7 +318,7 @@ export default function CompanyPage() {
                       <td className="px-6 py-3 text-right">
                         {f.id ? (
                           <button
-                            onClick={() => handleAnalyze(f.id!)}
+                            onClick={() => handleAnalyze(f.id!, f.db_status === "analyzed")}
                             disabled={analyzingId === f.id}
                             className="text-xs text-[#c8a97e] hover:text-[#c8a97e]/80 transition-colors disabled:opacity-50"
                           >
