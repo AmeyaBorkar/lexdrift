@@ -1,0 +1,400 @@
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func, desc
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from lexdrift.db.models import Company, DriftScore, Filing, Section, KeyPhrase, SentenceChange
+from lexdrift.db.session import get_db
+from lexdrift.edgar.tickers import lookup_ticker
+from lexdrift.nlp.diff import unified_diff, diff_stats
+from lexdrift.nlp.drift import compute_drift
+from lexdrift.nlp.phrases import compare_phrases
+
+router = APIRouter(tags=["drift"])
+
+
+@router.post("/filings/{filing_id}/analyze")
+async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
+    """Run NLP drift analysis on a filing, comparing against the previous filing."""
+    # Get current filing and its company
+    stmt = select(Filing).where(Filing.id == filing_id)
+    result = await db.execute(stmt)
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=404, detail="Filing not found")
+
+    # Find previous filing of same form type for this company
+    stmt = (
+        select(Filing)
+        .where(
+            Filing.company_id == filing.company_id,
+            Filing.form_type == filing.form_type,
+            Filing.filing_date < filing.filing_date,
+        )
+        .order_by(desc(Filing.filing_date))
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    prev_filing = result.scalar_one_or_none()
+    if not prev_filing:
+        return {"message": "No previous filing found for comparison", "filing_id": filing_id}
+
+    # Get sections for both filings
+    stmt = select(Section).where(Section.filing_id == filing_id)
+    result = await db.execute(stmt)
+    curr_sections = {s.section_type: s for s in result.scalars().all()}
+
+    stmt = select(Section).where(Section.filing_id == prev_filing.id)
+    result = await db.execute(stmt)
+    prev_sections = {s.section_type: s for s in result.scalars().all()}
+
+    # Compute drift for each matching section
+    results = []
+    for section_type, curr_section in curr_sections.items():
+        prev_section = prev_sections.get(section_type)
+        if not prev_section or not prev_section.section_text or not curr_section.section_text:
+            continue
+
+        drift = compute_drift(
+            prev_section.section_text,
+            curr_section.section_text,
+            prev_embedding=prev_section.embedding,
+            curr_embedding=curr_section.embedding,
+        )
+
+        # Update section embeddings if they were computed
+        if not curr_section.embedding:
+            curr_section.embedding = drift["curr_embedding_bytes"]
+        if not prev_section.embedding:
+            prev_section.embedding = drift["prev_embedding_bytes"]
+
+        # Store drift score
+        drift_score = DriftScore(
+            company_id=filing.company_id,
+            filing_id=filing.id,
+            prev_filing_id=prev_filing.id,
+            section_type=section_type,
+            cosine_distance=drift["cosine_distance"],
+            jaccard_distance=drift["jaccard_distance"],
+            added_words=drift["added_words"],
+            removed_words=drift["removed_words"],
+            sentiment_delta=drift["sentiment_delta"],
+        )
+        db.add(drift_score)
+        await db.flush()  # get drift_score.id for sentence changes FK
+
+        # Store sentence-level changes
+        sent = drift["sentence_changes"]
+        for entry in sent["added"]:
+            db.add(SentenceChange(
+                drift_score_id=drift_score.id, change_type="added",
+                sentence_text=entry["text"], sentence_index=entry["index"],
+            ))
+        for entry in sent["removed"]:
+            db.add(SentenceChange(
+                drift_score_id=drift_score.id, change_type="removed",
+                sentence_text=entry["text"], sentence_index=entry["index"],
+            ))
+        for entry in sent["changed"]:
+            db.add(SentenceChange(
+                drift_score_id=drift_score.id, change_type="changed",
+                sentence_text=entry["curr_text"],
+                matched_text=entry["prev_text"],
+                similarity_score=entry["similarity"],
+                sentence_index=entry["curr_index"],
+            ))
+
+        # Track phrases: priority check + automatic n-gram discovery
+        phrase_comparison = compare_phrases(prev_section.section_text, curr_section.section_text)
+
+        # Store priority phrase changes in DB
+        for phrase in phrase_comparison["priority"]["appeared"]:
+            db.add(KeyPhrase(
+                filing_id=filing.id, section_type=section_type,
+                phrase=phrase, first_seen_filing_id=filing.id, status="appeared",
+            ))
+        for phrase in phrase_comparison["priority"]["disappeared"]:
+            db.add(KeyPhrase(
+                filing_id=filing.id, section_type=section_type,
+                phrase=phrase, status="disappeared",
+            ))
+        for phrase in phrase_comparison["priority"]["persisted"]:
+            db.add(KeyPhrase(
+                filing_id=filing.id, section_type=section_type,
+                phrase=phrase, status="persisted",
+            ))
+
+        # Also store top auto-discovered phrases
+        for entry in phrase_comparison["discovered"]["appeared"][:10]:
+            db.add(KeyPhrase(
+                filing_id=filing.id, section_type=section_type,
+                phrase=entry["phrase"], first_seen_filing_id=filing.id, status="appeared",
+            ))
+        for entry in phrase_comparison["discovered"]["disappeared"][:10]:
+            db.add(KeyPhrase(
+                filing_id=filing.id, section_type=section_type,
+                phrase=entry["phrase"], status="disappeared",
+            ))
+
+        results.append({
+            "section_type": section_type,
+            "cosine_distance": round(drift["cosine_distance"], 4),
+            "jaccard_distance": round(drift["jaccard_distance"], 4),
+            "added_words": drift["added_words"],
+            "removed_words": drift["removed_words"],
+            "sentiment_delta": {k: round(v, 4) for k, v in drift["sentiment_delta"].items()},
+            "phrases": phrase_comparison,
+            "sentence_changes": sent["stats"],
+            "top_changes": {
+                "added": [e["text"][:200] for e in sent["added"][:5]],
+                "removed": [e["text"][:200] for e in sent["removed"][:5]],
+                "changed": [
+                    {"from": e["prev_text"][:200], "to": e["curr_text"][:200],
+                     "similarity": e["similarity"]}
+                    for e in sent["changed"][:5]
+                ],
+            },
+        })
+
+    filing.status = "analyzed"
+    await db.commit()
+
+    return {
+        "filing_id": filing.id,
+        "prev_filing_id": prev_filing.id,
+        "form_type": filing.form_type,
+        "sections_analyzed": len(results),
+        "results": results,
+    }
+
+
+@router.get("/drift/{drift_score_id}/sentences")
+async def get_sentence_changes(
+    drift_score_id: int,
+    change_type: str | None = Query(None, description="Filter: added, removed, changed"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get sentence-level changes for a specific drift score."""
+    query = select(SentenceChange).where(SentenceChange.drift_score_id == drift_score_id)
+    if change_type:
+        query = query.where(SentenceChange.change_type == change_type)
+    query = query.order_by(SentenceChange.sentence_index)
+
+    result = await db.execute(query)
+    changes = result.scalars().all()
+    if not changes:
+        raise HTTPException(status_code=404, detail="No sentence changes found")
+
+    return {
+        "drift_score_id": drift_score_id,
+        "data": [
+            {
+                "change_type": c.change_type,
+                "text": c.sentence_text,
+                "matched_text": c.matched_text,
+                "similarity": round(c.similarity_score, 4) if c.similarity_score else None,
+                "index": c.sentence_index,
+            }
+            for c in changes
+        ],
+        "total": len(changes),
+    }
+
+
+@router.get("/companies/{ticker}/drift")
+async def get_drift_timeline(
+    ticker: str,
+    section_type: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get drift score time series for a company."""
+    info = await lookup_ticker(ticker)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
+
+    stmt = select(Company).where(Company.cik == info["cik"])
+    result = await db.execute(stmt)
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not in database. Ingest filings first.")
+
+    # Build drift timeline query
+    query = (
+        select(
+            DriftScore.section_type,
+            DriftScore.cosine_distance,
+            DriftScore.jaccard_distance,
+            DriftScore.sentiment_delta,
+            DriftScore.added_words,
+            DriftScore.removed_words,
+            Filing.filing_date,
+            Filing.form_type,
+            Filing.accession_number,
+        )
+        .join(Filing, DriftScore.filing_id == Filing.id)
+        .where(DriftScore.company_id == company.id)
+        .order_by(Filing.filing_date)
+    )
+
+    if section_type:
+        query = query.where(DriftScore.section_type == section_type)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    timeline = []
+    for row in rows:
+        timeline.append({
+            "section_type": row.section_type,
+            "cosine_distance": round(row.cosine_distance, 4) if row.cosine_distance else None,
+            "jaccard_distance": round(row.jaccard_distance, 4) if row.jaccard_distance else None,
+            "sentiment_delta": row.sentiment_delta,
+            "added_words": row.added_words,
+            "removed_words": row.removed_words,
+            "filing_date": row.filing_date.isoformat() if row.filing_date else None,
+            "form_type": row.form_type,
+            "accession_number": row.accession_number,
+        })
+
+    return {"ticker": ticker, "data": timeline, "total": len(timeline)}
+
+
+@router.get("/filings/{filing_id}/diff")
+async def get_filing_diff(
+    filing_id: int,
+    vs: int = Query(..., description="ID of the previous filing to diff against"),
+    section_type: str = Query("risk_factors"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get unified diff between two filings for a given section."""
+    # Fetch both sections
+    stmt = select(Section).where(Section.filing_id == filing_id, Section.section_type == section_type)
+    result = await db.execute(stmt)
+    curr_section = result.scalar_one_or_none()
+
+    stmt = select(Section).where(Section.filing_id == vs, Section.section_type == section_type)
+    result = await db.execute(stmt)
+    prev_section = result.scalar_one_or_none()
+
+    if not curr_section or not prev_section:
+        raise HTTPException(status_code=404, detail="Section not found in one or both filings")
+
+    diff_text = unified_diff(prev_section.section_text, curr_section.section_text)
+    stats = diff_stats(prev_section.section_text, curr_section.section_text)
+
+    return {
+        "filing_id": filing_id,
+        "vs_filing_id": vs,
+        "section_type": section_type,
+        "diff": diff_text,
+        "stats": stats,
+    }
+
+
+@router.get("/drift/screener")
+async def drift_screener(
+    sort_by: str = Query("cosine_distance", description="Sort by: cosine_distance, jaccard_distance"),
+    section_type: str = Query("risk_factors"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Screener: rank all companies by their most recent drift score."""
+    # Subquery for most recent drift score per company
+    latest_drift = (
+        select(
+            DriftScore.company_id,
+            func.max(DriftScore.computed_at).label("latest"),
+        )
+        .where(DriftScore.section_type == section_type)
+        .group_by(DriftScore.company_id)
+        .subquery()
+    )
+
+    sort_col = getattr(DriftScore, sort_by, DriftScore.cosine_distance)
+
+    query = (
+        select(
+            Company.ticker,
+            Company.name,
+            DriftScore.cosine_distance,
+            DriftScore.jaccard_distance,
+            DriftScore.added_words,
+            DriftScore.removed_words,
+            DriftScore.sentiment_delta,
+            Filing.filing_date,
+        )
+        .join(DriftScore, DriftScore.company_id == Company.id)
+        .join(Filing, DriftScore.filing_id == Filing.id)
+        .join(
+            latest_drift,
+            (DriftScore.company_id == latest_drift.c.company_id)
+            & (DriftScore.computed_at == latest_drift.c.latest),
+        )
+        .where(DriftScore.section_type == section_type)
+        .order_by(desc(sort_col))
+        .offset(offset)
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    data = []
+    for row in rows:
+        data.append({
+            "ticker": row.ticker,
+            "name": row.name,
+            "cosine_distance": round(row.cosine_distance, 4) if row.cosine_distance else None,
+            "jaccard_distance": round(row.jaccard_distance, 4) if row.jaccard_distance else None,
+            "added_words": row.added_words,
+            "removed_words": row.removed_words,
+            "sentiment_delta": row.sentiment_delta,
+            "filing_date": row.filing_date.isoformat() if row.filing_date else None,
+        })
+
+    return {"data": data, "total": len(data), "section_type": section_type}
+
+
+@router.get("/companies/{ticker}/phrases")
+async def get_phrase_timeline(
+    ticker: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get key phrase tracking timeline for a company."""
+    info = await lookup_ticker(ticker)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
+
+    stmt = select(Company).where(Company.cik == info["cik"])
+    result = await db.execute(stmt)
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not in database")
+
+    query = (
+        select(
+            KeyPhrase.phrase,
+            KeyPhrase.section_type,
+            KeyPhrase.status,
+            Filing.filing_date,
+            Filing.form_type,
+        )
+        .join(Filing, KeyPhrase.filing_id == Filing.id)
+        .where(Filing.company_id == company.id)
+        .order_by(Filing.filing_date)
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    timeline = []
+    for row in rows:
+        timeline.append({
+            "phrase": row.phrase,
+            "section_type": row.section_type,
+            "status": row.status,
+            "filing_date": row.filing_date.isoformat() if row.filing_date else None,
+            "form_type": row.form_type,
+        })
+
+    return {"ticker": ticker, "data": timeline, "total": len(timeline)}

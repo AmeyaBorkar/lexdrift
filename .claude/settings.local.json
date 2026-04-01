@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -H \"User-Agent: LexDrift research@example.com\" \"https://www.sec.gov/files/company_tickers.json\")",
+      "WebFetch(domain:sraf.nd.edu)",
+      "WebSearch",
+      "Bash(curl -s -H \"User-Agent: LexDrift research@example.com\" \"https://data.sec.gov/submissions/CIK0000320193.json\")",
+      "Bash(curl -s -H \"User-Agent: LexDrift research@example.com\" \"https://efts.sec.gov/LATEST/search-index?q=tesla&dateRange=custom&startdt=2024-01-01&enddt=2024-12-31&forms=10-K\")",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from lexdrift.main import app; print\\('FastAPI app imported OK'\\)\")",
+      "Bash(python -c \"from lexdrift.db.models import Base; print\\(f'Models OK: {len\\(Base.metadata.tables\\)} tables: {list\\(Base.metadata.tables.keys\\(\\)\\)}'\\)\")",
+      "Bash(python -m pytest tests/test_api/test_health.py -v)",
+      "Bash(python -m alembic revision --autogenerate -m \"initial schema\")",
+      "Bash(python -c \"from lexdrift.main import app; print\\('Routes:'\\); [print\\(f'  {r.methods} {r.path}'\\) for r in app.routes]\")",
+      "Bash(python -c ':*)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(grep -v \"^Loading\\\\|^Warning\\\\|^$\\\\|warnings\")"
+    ]
+  }
+}
