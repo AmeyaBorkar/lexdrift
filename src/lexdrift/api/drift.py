@@ -299,7 +299,7 @@ async def analyze_filing(
                     severity=severity,
                     message=(
                         f"Anomalous drift detected in {section_type}: "
-                        f"z-score {anomaly_info['company_z_score']:.2f} "
+                        f"z-score {anomaly_info['company_z_score'] or 'N/A'} "
                         f"({anomaly_info['anomaly_level']} level)"
                     ),
                     metadata_={
