@@ -21,9 +21,16 @@ from lexdrift.db.session import get_db
 from lexdrift.edgar.tickers import lookup_ticker
 from lexdrift.nlp.anomaly import detect_anomaly, detect_trends
 from lexdrift.nlp.contagion import build_risk_graph, compute_systemic_risk
+from lexdrift.nlp.intelligence import generate_intelligence, _get_sync_session, CompanyIntelligence
+from lexdrift.nlp.cross_filing import (
+    detect_divergence,
+    detect_risk_propagation,
+    generate_market_intelligence,
+)
 from lexdrift.nlp.embeddings import bytes_to_embedding
 from lexdrift.nlp.entropy import compute_filing_entropy
 from lexdrift.nlp.latent_space import build_latent_space
+from lexdrift.nlp.narrative import generate_market_narrative
 from lexdrift.nlp.obfuscation import detect_obfuscation
 from lexdrift.nlp.velocity import compute_semantic_kinematics
 
@@ -591,3 +598,92 @@ async def get_latent_space(
         "total_points": len(coordinates),
         "coordinates": coordinates,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /research/market-intelligence
+# ---------------------------------------------------------------------------
+
+@router.get("/market-intelligence")
+async def get_market_intelligence(
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a cross-filing market intelligence report.
+
+    Synthesises sector trends, risk language propagation, and divergent
+    filers into a single market-level view with an optional narrative.
+    """
+    import dataclasses as _dc
+
+    intel = await generate_market_intelligence(db)
+    narrative = generate_market_narrative(intel)
+
+    return {
+        **_dc.asdict(intel),
+        "narrative": narrative,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /research/cross-filing/{ticker}
+# ---------------------------------------------------------------------------
+
+@router.get("/cross-filing/{ticker}")
+async def get_cross_filing(
+    ticker: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return cross-filing signals relevant to a specific company.
+
+    Includes divergence analysis (is this company drifting more or less
+    than peers?) and any risk language propagation signals involving this
+    company.
+    """
+    import dataclasses as _dc
+
+    company = await _resolve_company(ticker, db)
+
+    divergence_signals = await detect_divergence(db, company.id)
+
+    # Get all propagation signals and filter to those involving this ticker
+    all_propagations = await detect_risk_propagation(db)
+    company_ticker = company.ticker or ticker.upper()
+    relevant_propagations = [
+        sig for sig in all_propagations
+        if company_ticker in sig.companies_involved
+    ]
+
+    return {
+        "ticker": ticker,
+        "company": company.name,
+        "divergence_signals": [_dc.asdict(s) for s in divergence_signals],
+        "propagation_signals": [_dc.asdict(s) for s in relevant_propagations],
+        "total_signals": len(divergence_signals) + len(relevant_propagations),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /research/intelligence/{ticker}
+# ---------------------------------------------------------------------------
+
+@router.get("/intelligence/{ticker}")
+async def get_intelligence(
+    ticker: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate comprehensive intelligence assessment for a company.
+
+    Synthesises all available NLP signals -- drift scores, sentiment deltas,
+    phrase changes, anomaly z-scores, kinematics, and historical pattern
+    matches -- into a single structured assessment with risk scoring,
+    findings, predictions, comparables, and recommended actions.
+    """
+    # The intelligence engine uses synchronous SQLAlchemy (same as training
+    # scripts) so it can be called from both API and CLI contexts.
+    sync_session = _get_sync_session()
+    try:
+        intel = generate_intelligence(sync_session, ticker)
+    finally:
+        sync_session.close()
+
+    return dataclasses.asdict(intel)
