@@ -1,64 +1,79 @@
-"""Tests for lexdrift.nlp.phrases — discover_ngram_changes() and check_priority_phrases()."""
+"""Tests for lexdrift.nlp.phrases — TF-IDF keyphrases and watchlist phrases."""
 
 from unittest.mock import patch
 
 import pytest
 
-from lexdrift.nlp.phrases import check_priority_phrases, discover_ngram_changes
+from lexdrift.nlp.phrases import (
+    check_priority_phrases,
+    check_watchlist_phrases,
+    compare_keyphrases,
+    compare_phrases,
+    extract_keyphrases_tfidf,
+    _get_ngram_tf,
+)
 
 
-class TestDiscoverNgramChanges:
-    def test_detects_new_bigrams(self):
-        prev = "The company has stable revenue and consistent growth over time."
-        curr = (
-            "The company has stable revenue and consistent growth over time. "
-            "Going concern issues raised by auditors. Going concern doubt is real. "
-            "Going concern language was added."
+class TestExtractKeyphrasesTfidf:
+    def test_returns_list_of_dicts(self):
+        text = (
+            "The company faces going concern issues. Going concern doubt "
+            "was raised by auditors. Going concern language persists."
         )
-        result = discover_ngram_changes(prev, curr, min_freq=1, top_k=20)
-        appeared_phrases = {item["phrase"] for item in result["appeared"]}
-        assert "going concern" in appeared_phrases
+        result = extract_keyphrases_tfidf(text, top_k=10)
+        assert isinstance(result, list)
+        if result:
+            assert "phrase" in result[0]
+            assert "score" in result[0]
 
-    def test_detects_disappeared_bigrams(self):
-        prev = (
-            "Material weakness in internal controls identified. "
-            "Material weakness must be remediated. "
-            "Material weakness disclosures are required."
-        )
-        curr = "The company has improved its internal controls substantially."
-        result = discover_ngram_changes(prev, curr, min_freq=1, top_k=20)
-        disappeared_phrases = {item["phrase"] for item in result["disappeared"]}
-        assert "material weakness" in disappeared_phrases
+    def test_empty_text_returns_empty(self):
+        assert extract_keyphrases_tfidf("", top_k=5) == []
 
-    def test_returns_appeared_and_disappeared_keys(self):
-        result = discover_ngram_changes("old text here", "new text here", min_freq=1, top_k=10)
+    def test_top_k_limits_results(self):
+        text = (
+            "alpha beta gamma delta epsilon zeta theta iota kappa lambda "
+            "alpha beta gamma delta epsilon zeta theta iota kappa lambda "
+        ) * 5
+        result = extract_keyphrases_tfidf(text, top_k=3)
+        assert len(result) <= 3
+
+
+class TestCompareKeyphrases:
+    def test_returns_expected_keys(self):
+        prev = "The company has stable revenue and consistent growth."
+        curr = "The company faces going concern issues raised by auditors."
+        result = compare_keyphrases(prev, curr)
         assert "appeared" in result
         assert "disappeared" in result
+        assert "intensified" in result
+        assert "diminished" in result
 
-    def test_identical_texts_no_changes(self):
+    def test_identical_texts_minimal_changes(self):
         text = "The company reported quarterly earnings in line with expectations."
-        result = discover_ngram_changes(text, text, min_freq=1, top_k=10)
+        result = compare_keyphrases(text, text)
+        # Same text should have no appeared/disappeared
         assert result["appeared"] == []
         assert result["disappeared"] == []
 
-    def test_top_k_limits_results(self):
-        prev = "alpha beta " * 5
-        curr = (
-            "alpha beta " * 5
-            + "gamma delta " * 5
-            + "epsilon zeta " * 5
-            + "theta iota " * 5
-        )
-        result = discover_ngram_changes(prev, curr, min_freq=1, top_k=2)
-        assert len(result["appeared"]) <= 2
+
+class TestComparePhrasesBackwardCompat:
+    def test_returns_priority_and_discovered_keys(self):
+        prev = "The company has strong financials."
+        curr = "The company faces some challenges."
+        with patch("lexdrift.nlp.phrases.load_priority_phrases", return_value=set()):
+            result = compare_phrases(prev, curr)
+        assert "priority" in result
+        assert "discovered" in result
+        assert "appeared" in result["discovered"]
+        assert "disappeared" in result["discovered"]
 
 
-class TestCheckPriorityPhrases:
+class TestCheckWatchlistPhrases:
     @patch("lexdrift.nlp.phrases.load_priority_phrases", return_value=set())
     def test_detects_appeared_extra_phrases(self, _mock_load):
         prev = "The company has strong financials."
         curr = "There is going concern doubt about the company."
-        result = check_priority_phrases(
+        result = check_watchlist_phrases(
             prev, curr, extra_phrases={"going concern", "material weakness"}
         )
         assert "going concern" in result["appeared"]
@@ -67,7 +82,7 @@ class TestCheckPriorityPhrases:
     def test_detects_disappeared_extra_phrases(self, _mock_load):
         prev = "The auditor noted a material weakness in controls."
         curr = "The company has improved its internal procedures."
-        result = check_priority_phrases(
+        result = check_watchlist_phrases(
             prev, curr, extra_phrases={"material weakness"}
         )
         assert "material weakness" in result["disappeared"]
@@ -76,7 +91,20 @@ class TestCheckPriorityPhrases:
     def test_detects_persisted_phrases(self, _mock_load):
         prev = "There is a going concern risk factor."
         curr = "The going concern risk persists into 2025."
-        result = check_priority_phrases(
+        result = check_watchlist_phrases(
             prev, curr, extra_phrases={"going concern"}
         )
         assert "going concern" in result["persisted"]
+
+
+class TestCheckPriorityPhrasesAlias:
+    """Verify the old name still works (backward compat)."""
+
+    @patch("lexdrift.nlp.phrases.load_priority_phrases", return_value=set())
+    def test_alias_works(self, _mock_load):
+        prev = "The company has strong financials."
+        curr = "There is going concern doubt about the company."
+        result = check_priority_phrases(
+            prev, curr, extra_phrases={"going concern"}
+        )
+        assert "going concern" in result["appeared"]

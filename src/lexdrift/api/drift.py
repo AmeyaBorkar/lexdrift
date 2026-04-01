@@ -12,7 +12,7 @@ from lexdrift.nlp.diff import unified_diff, diff_stats
 from lexdrift.nlp.drift import compute_drift
 from lexdrift.nlp.entropy import compute_filing_entropy
 from lexdrift.nlp.obfuscation import detect_obfuscation
-from lexdrift.nlp.phrases import compare_phrases
+from lexdrift.nlp.phrases import compare_keyphrases, check_watchlist_phrases
 
 logger = logging.getLogger(__name__)
 
@@ -147,36 +147,57 @@ async def analyze_filing(
                     sentence_index=entry["curr_index"],
                 ))
 
-            # Track phrases: priority check + automatic n-gram discovery
-            phrase_comparison = compare_phrases(prev_section.section_text, curr_section.section_text)
+            # Track phrases: watchlist check + TF-IDF/KeyBERT keyphrase discovery
+            watchlist = check_watchlist_phrases(prev_section.section_text, curr_section.section_text)
+            keyphrase_changes = compare_keyphrases(prev_section.section_text, curr_section.section_text)
 
-            # Store priority phrase changes in DB
-            for phrase in phrase_comparison["priority"]["appeared"]:
+            # Build combined phrase_comparison for response (backward compat)
+            phrase_comparison = {
+                "priority": watchlist,
+                "discovered": {
+                    "appeared": keyphrase_changes["appeared"],
+                    "disappeared": keyphrase_changes["disappeared"],
+                },
+                "keyphrase_changes": keyphrase_changes,
+            }
+
+            # Store watchlist phrase changes in DB
+            for phrase in watchlist["appeared"]:
                 db.add(KeyPhrase(
                     filing_id=filing.id, section_type=section_type,
                     phrase=phrase, first_seen_filing_id=filing.id, status="appeared",
                 ))
-            for phrase in phrase_comparison["priority"]["disappeared"]:
+            for phrase in watchlist["disappeared"]:
                 db.add(KeyPhrase(
                     filing_id=filing.id, section_type=section_type,
                     phrase=phrase, status="disappeared",
                 ))
-            for phrase in phrase_comparison["priority"]["persisted"]:
+            for phrase in watchlist["persisted"]:
                 db.add(KeyPhrase(
                     filing_id=filing.id, section_type=section_type,
                     phrase=phrase, status="persisted",
                 ))
 
-            # Also store top auto-discovered phrases
-            for entry in phrase_comparison["discovered"]["appeared"][:10]:
+            # Store top TF-IDF discovered keyphrase changes
+            for entry in keyphrase_changes["appeared"][:10]:
                 db.add(KeyPhrase(
                     filing_id=filing.id, section_type=section_type,
                     phrase=entry["phrase"], first_seen_filing_id=filing.id, status="appeared",
                 ))
-            for entry in phrase_comparison["discovered"]["disappeared"][:10]:
+            for entry in keyphrase_changes["disappeared"][:10]:
                 db.add(KeyPhrase(
                     filing_id=filing.id, section_type=section_type,
                     phrase=entry["phrase"], status="disappeared",
+                ))
+            for entry in keyphrase_changes["intensified"][:10]:
+                db.add(KeyPhrase(
+                    filing_id=filing.id, section_type=section_type,
+                    phrase=entry["phrase"], status="intensified",
+                ))
+            for entry in keyphrase_changes["diminished"][:10]:
+                db.add(KeyPhrase(
+                    filing_id=filing.id, section_type=section_type,
+                    phrase=entry["phrase"], status="diminished",
                 ))
 
             # Obfuscation detection

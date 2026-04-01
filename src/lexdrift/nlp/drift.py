@@ -4,6 +4,7 @@ import numpy as np
 
 from lexdrift.nlp.boilerplate import classify_boilerplate
 from lexdrift.nlp.embeddings import bytes_to_embedding, cosine_distance, encode_text, embedding_to_bytes
+from lexdrift.nlp.phrases import compare_keyphrases
 from lexdrift.nlp.risk import score_changes
 from lexdrift.nlp.sentences import compare_sentences
 from lexdrift.nlp.sentiment import score_sentiment
@@ -177,6 +178,17 @@ def compute_drift(
     except Exception:
         logger.warning("Boilerplate classification failed", exc_info=True)
 
+    # Keyphrase comparison (TF-IDF + KeyBERT) — auxiliary, degrade gracefully
+    try:
+        keyphrase_changes = compare_keyphrases(prev_text, curr_text)
+    except Exception:
+        logger.warning("Keyphrase comparison failed; returning empty results", exc_info=True)
+        keyphrase_changes = {
+            "appeared": [], "disappeared": [],
+            "intensified": [], "diminished": [],
+            "semantic_prev": [], "semantic_curr": [],
+        }
+
     return {
         "cosine_distance": cos_dist,
         "jaccard_distance": jac_dist,
@@ -188,4 +200,5 @@ def compute_drift(
         "curr_embedding_bytes": embedding_to_bytes(emb_curr),
         "prev_embedding_bytes": embedding_to_bytes(emb_prev),
         "sentence_changes": scored_changes,
+        "keyphrase_changes": keyphrase_changes,
     }

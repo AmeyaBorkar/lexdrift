@@ -24,7 +24,7 @@ from lexdrift.db.models import (
 from lexdrift.nlp.drift import compute_drift
 from lexdrift.nlp.entropy import compute_filing_entropy
 from lexdrift.nlp.obfuscation import detect_obfuscation
-from lexdrift.nlp.phrases import compare_phrases
+from lexdrift.nlp.phrases import compare_keyphrases, check_watchlist_phrases
 from lexdrift.workers.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -213,12 +213,15 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     sentence_index=entry["curr_index"],
                 ))
 
-            # 4c. Store KeyPhrase records (priority + auto-discovered)
-            phrase_comparison = compare_phrases(
+            # 4c. Store KeyPhrase records (watchlist + TF-IDF/KeyBERT discovered)
+            watchlist = check_watchlist_phrases(
+                prev_section.section_text, curr_section.section_text
+            )
+            keyphrase_changes = compare_keyphrases(
                 prev_section.section_text, curr_section.section_text
             )
 
-            for phrase in phrase_comparison["priority"]["appeared"]:
+            for phrase in watchlist["appeared"]:
                 session.add(KeyPhrase(
                     filing_id=filing.id,
                     section_type=section_type,
@@ -227,7 +230,7 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     status="appeared",
                 ))
 
-            for phrase in phrase_comparison["priority"]["disappeared"]:
+            for phrase in watchlist["disappeared"]:
                 session.add(KeyPhrase(
                     filing_id=filing.id,
                     section_type=section_type,
@@ -235,7 +238,7 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     status="disappeared",
                 ))
 
-            for phrase in phrase_comparison["priority"]["persisted"]:
+            for phrase in watchlist["persisted"]:
                 session.add(KeyPhrase(
                     filing_id=filing.id,
                     section_type=section_type,
@@ -243,7 +246,7 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     status="persisted",
                 ))
 
-            for entry in phrase_comparison["discovered"]["appeared"][:10]:
+            for entry in keyphrase_changes["appeared"][:10]:
                 session.add(KeyPhrase(
                     filing_id=filing.id,
                     section_type=section_type,
@@ -252,12 +255,28 @@ def _do_analyze(filing_id: int, force: bool = False) -> dict:
                     status="appeared",
                 ))
 
-            for entry in phrase_comparison["discovered"]["disappeared"][:10]:
+            for entry in keyphrase_changes["disappeared"][:10]:
                 session.add(KeyPhrase(
                     filing_id=filing.id,
                     section_type=section_type,
                     phrase=entry["phrase"],
                     status="disappeared",
+                ))
+
+            for entry in keyphrase_changes["intensified"][:10]:
+                session.add(KeyPhrase(
+                    filing_id=filing.id,
+                    section_type=section_type,
+                    phrase=entry["phrase"],
+                    status="intensified",
+                ))
+
+            for entry in keyphrase_changes["diminished"][:10]:
+                session.add(KeyPhrase(
+                    filing_id=filing.id,
+                    section_type=section_type,
+                    phrase=entry["phrase"],
+                    status="diminished",
                 ))
 
             # 4d. Obfuscation detection (matches API endpoint behavior)
