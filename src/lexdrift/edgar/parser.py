@@ -70,6 +70,55 @@ _TOC_INDICATORS = re.compile(
 )
 
 
+def _strip_toc_block(text: str) -> str:
+    """Remove leading Table of Contents blocks from cleaned text.
+
+    If the cleaned text starts with lines that look like a TOC
+    (multiple 'Item X...page' patterns), strip them out.
+    """
+    lines = text.split("\n")
+    toc_pattern = re.compile(
+        r"^\s*item\s+\d+[a-z]?\b.*\d+\s*$",
+        re.IGNORECASE,
+    )
+    toc_heading = re.compile(r"table\s+of\s+contents", re.IGNORECASE)
+
+    # Find the end of any leading TOC block
+    toc_line_count = 0
+    end_idx = 0
+    in_toc = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if toc_heading.search(stripped):
+            in_toc = True
+            end_idx = i + 1
+            continue
+        if in_toc:
+            if toc_pattern.match(stripped) or len(stripped) < 80:
+                toc_line_count += 1
+                end_idx = i + 1
+            else:
+                # We've left the TOC — stop if we saw enough TOC lines
+                if toc_line_count >= 3:
+                    break
+                else:
+                    # False positive — not really a TOC
+                    in_toc = False
+                    toc_line_count = 0
+                    end_idx = 0
+        elif i > 30:
+            # Don't scan forever; TOC is near the top
+            break
+
+    if in_toc and toc_line_count >= 3:
+        text = "\n".join(lines[end_idx:])
+
+    return text
+
+
 def clean_html(html_text: str) -> str:
     """Strip HTML tags and normalize whitespace from SEC filing HTML."""
     soup = BeautifulSoup(html_text, "lxml")
@@ -82,6 +131,11 @@ def clean_html(html_text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.strip() for line in text.split("\n")]
     text = "\n".join(lines)
+
+    text = text.strip()
+
+    # Strip any leading Table of Contents blocks
+    text = _strip_toc_block(text)
 
     return text.strip()
 
@@ -175,11 +229,49 @@ def _detect_toc_zone(text: str) -> tuple[int, int]:
     return (toc_start, toc_start + min(len(text) - toc_start, 5000))
 
 
+_CROSS_REFERENCE_PATTERNS = re.compile(
+    r"see\s+item|refer\s+to\s+item|incorporated\s+by\s+reference|"
+    r"filed\s+as\s+exhibit|included\s+in\s+part",
+    re.IGNORECASE,
+)
+
+
+def _is_cross_reference(text: str) -> bool:
+    """Return True if a section is a cross-reference stub instead of real content.
+
+    Cross-references are short sections (under 200 words) that say things like
+    'See Item 2 below' or 'Information required by this item is incorporated
+    by reference' instead of containing actual disclosure content.
+    """
+    words = text.split()
+    if len(words) >= 200:
+        return False
+    return bool(_CROSS_REFERENCE_PATTERNS.search(text))
+
+
+# More aggressive patterns for the second pass — handle ALL-CAPS headings,
+# headings without punctuation, and headings that include the section title.
+_SECOND_PASS_PATTERNS_10K = [
+    ("business", r"(?:^|\n)\s*(?:ITEM\s+1|item\s+1)[\.\s:\-—]*(?:business)?(?:\s|$)(?!a|b)", "Item 1"),
+    ("risk_factors", r"(?:^|\n)\s*(?:ITEM\s+1A|item\s+1a)[\.\s:\-—]*(?:risk\s+factors)?", "Item 1A"),
+    ("unresolved_staff_comments", r"(?:^|\n)\s*(?:ITEM\s+1B|item\s+1b)[\.\s:\-—]*(?:unresolved)?", "Item 1B"),
+    ("properties", r"(?:^|\n)\s*(?:ITEM\s+2|item\s+2)[\.\s:\-—]*(?:properties)?(?:\s|$)", "Item 2"),
+    ("legal_proceedings", r"(?:^|\n)\s*(?:ITEM\s+3|item\s+3)[\.\s:\-—]*(?:legal)?(?:\s|$)", "Item 3"),
+    ("mdna", r"(?:^|\n)\s*(?:ITEM\s+7|item\s+7)[\.\s:\-—]*(?:management)?(?:\s|$)(?!a)", "Item 7"),
+    ("quantitative_disclosures", r"(?:^|\n)\s*(?:ITEM\s+7A|item\s+7a)[\.\s:\-—]*(?:quantitative)?", "Item 7A"),
+    ("financial_statements", r"(?:^|\n)\s*(?:ITEM\s+8|item\s+8)[\.\s:\-—]*(?:financial)?(?:\s|$)", "Item 8"),
+]
+
+
 def extract_sections(text: str, form_type: str) -> dict[str, str]:
     """Extract named sections from cleaned filing text using regex.
 
     Uses TOC detection to avoid matching section headings that are just
     table-of-contents entries rather than actual section starts.
+
+    Cross-reference stubs (e.g. 'See Item 2 below') are automatically
+    skipped. If any extracted section has fewer than 100 words, a second
+    pass with more aggressive heading patterns is attempted.
     """
     if form_type.startswith("10-K"):
         patterns = SECTION_PATTERNS_10K
@@ -214,12 +306,54 @@ def extract_sections(text: str, form_type: str) -> dict[str, str]:
         end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text)
         section_text = text[pos:end].strip()
 
+        # Skip cross-reference stubs
+        if _is_cross_reference(section_text):
+            logger.debug(
+                "Skipping cross-reference stub for %s (%d words)",
+                section_type, len(section_text.split()),
+            )
+            continue
+
         # Keep the longer match for each section type
         # (handles cases where a heading appears in both TOC and body)
         if section_type in sections and len(section_text) < len(sections[section_type]):
             continue
 
         sections[section_type] = section_text
+
+    # ------------------------------------------------------------------
+    # Second pass: if any section has < 100 words, try aggressive patterns
+    # ------------------------------------------------------------------
+    has_short_section = any(
+        len(s.split()) < 100 for s in sections.values()
+    )
+
+    if has_short_section and form_type.startswith("10-K"):
+        logger.info("Short sections detected; attempting second pass with aggressive patterns")
+        aggressive_boundaries: list[tuple[int, str]] = []
+        for section_type, pattern, _label in _SECOND_PASS_PATTERNS_10K:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                if toc_start < match.start() < toc_end:
+                    continue
+                aggressive_boundaries.append((match.start(), section_type))
+
+        if aggressive_boundaries:
+            aggressive_boundaries.sort(key=lambda x: x[0])
+            for i, (pos, section_type) in enumerate(aggressive_boundaries):
+                end = (
+                    aggressive_boundaries[i + 1][0]
+                    if i + 1 < len(aggressive_boundaries)
+                    else len(text)
+                )
+                section_text = text[pos:end].strip()
+
+                if _is_cross_reference(section_text):
+                    continue
+
+                # Only replace if the aggressive match is longer (more content)
+                existing = sections.get(section_type, "")
+                if len(section_text.split()) > len(existing.split()):
+                    sections[section_type] = section_text
 
     if not sections:
         logger.warning("No valid sections extracted, returning full text")

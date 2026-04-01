@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +12,59 @@ logger = logging.getLogger(__name__)
 # Loaded at runtime from file + DB
 _priority_phrases: set[str] = set()
 _loaded = False
+
+# ---------------------------------------------------------------------------
+# Noise n-gram filtering
+# ---------------------------------------------------------------------------
+
+_STOPWORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "of", "in", "to", "for", "and", "or", "is", "are",
+    "was", "were", "be", "been", "has", "had", "have", "with", "that",
+    "this", "from", "by", "at", "on", "as", "it", "its", "we", "our",
+    "their", "they", "any", "all", "each", "may", "can", "will", "could",
+    "would", "should", "not", "no", "such", "other", "also", "than",
+    "more", "which", "what", "where", "when", "how", "who", "but", "if",
+    "into", "about", "between", "through", "during", "before", "after",
+    "above", "below", "some", "these", "those", "there", "here", "do",
+    "does", "did", "been",
+})
+
+_STOPWORD_NGRAMS: frozenset[str] = frozenset({
+    "u s", "the u", "table of", "of contents", "table of contents",
+})
+
+_ITEM_NUMBER_PATTERN = re.compile(r"\bitem\s+\d", re.IGNORECASE)
+
+
+def _is_noise_ngram(ngram: str) -> bool:
+    """Return True if the n-gram is noise that should be filtered out.
+
+    Filters:
+    - N-grams composed entirely of stopwords
+    - Substrings of 'table of contents'
+    - N-grams containing 'item' followed by a number (TOC references)
+    - Known broken-abbreviation artifacts like 'u s', 'the u'
+    """
+    ngram_lower = ngram.lower().strip()
+
+    # Check known noise n-grams
+    if ngram_lower in _STOPWORD_NGRAMS:
+        return True
+
+    # Check if it's a substring of "table of contents"
+    if ngram_lower in "table of contents":
+        return True
+
+    # Check for TOC-style item references
+    if _ITEM_NUMBER_PATTERN.search(ngram_lower):
+        return True
+
+    # Check if all tokens are stopwords
+    tokens = ngram_lower.split()
+    if tokens and all(t in _STOPWORDS for t in tokens):
+        return True
+
+    return False
 
 
 def _extract_ngrams(tokens: list[str], n: int) -> list[str]:
@@ -81,6 +135,10 @@ def discover_ngram_changes(
     # Find appeared and disappeared
     raw_appeared = curr_significant - prev_significant
     raw_disappeared = prev_significant - curr_significant
+
+    # Filter out noise n-grams (stopword-only, TOC fragments, broken abbreviations)
+    raw_appeared = {ng for ng in raw_appeared if not _is_noise_ngram(ng)}
+    raw_disappeared = {ng for ng in raw_disappeared if not _is_noise_ngram(ng)}
 
     # Rank by frequency (most frequent first — these are the most deliberate additions)
     appeared = sorted(

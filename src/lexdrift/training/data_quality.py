@@ -522,6 +522,7 @@ def generate_elite_pairs(
         )
         .join(Filing, Section.filing_id == Filing.id)
         .where(Section.section_text.isnot(None))
+        .where(Section.word_count >= 100)  # Exclude bad parses (short stubs / cross-refs)
         .order_by(Filing.company_id, Section.section_type, Filing.filing_date)
     )
 
