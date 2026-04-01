@@ -26,6 +26,22 @@ SECTION_PATTERNS_10Q = [
     ("legal_proceedings", r"part\s+ii[\s\S]{0,30}?item\s+1[\.\s:\-—]+", "Part II Item 1 — Legal"),
 ]
 
+SECTION_PATTERNS_8K = [
+    ("material_agreement", r"item\s+1\.01[\s:\-—]+", "Item 1.01 — Entry into a Material Definitive Agreement"),
+    ("material_agreement_termination", r"item\s+1\.02[\s:\-—]+", "Item 1.02 — Termination of a Material Definitive Agreement"),
+    ("acquisition_disposition", r"item\s+2\.01[\s:\-—]+", "Item 2.01 — Completion of Acquisition or Disposition"),
+    ("results_of_operations", r"item\s+2\.02[\s:\-—]+", "Item 2.02 — Results of Operations and Financial Condition"),
+    ("exit_disposal_costs", r"item\s+2\.05[\s:\-—]+", "Item 2.05 — Costs Associated with Exit or Disposal Activities"),
+    ("material_impairments", r"item\s+2\.06[\s:\-—]+", "Item 2.06 — Material Impairments"),
+    ("delisting_notice", r"item\s+3\.01[\s:\-—]+", "Item 3.01 — Notice of Delisting"),
+    ("accountant_change", r"item\s+4\.01[\s:\-—]+", "Item 4.01 — Changes in Registrant's Certifying Accountant"),
+    ("financial_restatement", r"item\s+4\.02[\s:\-—]+", "Item 4.02 — Non-Reliance on Previously Issued Financial Statements"),
+    ("director_officer_change", r"item\s+5\.02[\s:\-—]+", "Item 5.02 — Departure/Election of Directors or Officers"),
+    ("regulation_fd", r"item\s+7\.01[\s:\-—]+", "Item 7.01 — Regulation FD Disclosure"),
+    ("other_events", r"item\s+8\.01[\s:\-—]+", "Item 8.01 — Other Events"),
+    ("financial_exhibits", r"item\s+9\.01[\s:\-—]+", "Item 9.01 — Financial Statements and Exhibits"),
+]
+
 # iXBRL section name mappings (used in modern filings since ~2019)
 IXBRL_SECTION_MAP = {
     "BusinessDescriptionAndBasisOfPresentationTextBlock": "business",
@@ -162,6 +178,8 @@ def extract_sections(text: str, form_type: str) -> dict[str, str]:
         patterns = SECTION_PATTERNS_10K
     elif form_type.startswith("10-Q"):
         patterns = SECTION_PATTERNS_10Q
+    elif form_type.startswith("8-K"):
+        patterns = SECTION_PATTERNS_8K
     else:
         return {"full_text": text}
 

@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lexdrift.db.models import Company, DriftScore, Filing, Section, KeyPhrase, SentenceChange
+from lexdrift.db.models import Alert, Company, DriftScore, Filing, Section, KeyPhrase, SentenceChange
 from lexdrift.db.session import get_db
 from lexdrift.edgar.tickers import lookup_ticker
 from lexdrift.nlp.anomaly import detect_anomaly, detect_trends
 from lexdrift.nlp.diff import unified_diff, diff_stats
 from lexdrift.nlp.drift import compute_drift
+from lexdrift.nlp.entropy import compute_filing_entropy
+from lexdrift.nlp.obfuscation import detect_obfuscation
 from lexdrift.nlp.phrases import compare_phrases
 
 router = APIRouter(tags=["drift"])
@@ -136,6 +138,25 @@ async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
                 phrase=entry["phrase"], status="disappeared",
             ))
 
+        # Obfuscation detection
+        obfuscation = detect_obfuscation(prev_section.section_text, curr_section.section_text)
+        obfuscation_result = {
+            "overall_obfuscation_score": obfuscation.overall_obfuscation_score,
+            "density_change": obfuscation.density_change,
+            "specificity_change": obfuscation.specificity_change,
+            "readability_change": obfuscation.readability_change,
+            "detected_euphemisms": obfuscation.detected_euphemisms,
+        }
+
+        # Entropy / information-theoretic analysis
+        entropy = compute_filing_entropy(prev_section.section_text, curr_section.section_text)
+        entropy_result = {
+            "kl_divergence": entropy.kl_divergence,
+            "novelty_score": entropy.novelty_score,
+            "entropy_rate_change": entropy.entropy_rate_change,
+            "vocab_overlap": entropy.vocab_overlap,
+        }
+
         results.append({
             "section_type": section_type,
             "cosine_distance": round(drift["cosine_distance"], 4),
@@ -154,6 +175,9 @@ async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
                     for e in sent["changed"][:5]
                 ],
             },
+            "obfuscation": obfuscation_result,
+            "entropy": entropy_result,
+            "_scored_changes": sent,  # internal: used for alert generation
         })
 
     filing.status = "analyzed"
@@ -217,16 +241,132 @@ async def analyze_filing(filing_id: int, db: AsyncSession = Depends(get_db)):
             sentiment_history=sentiment_history_all if sentiment_history_all else None,
         )
 
+    # ------------------------------------------------------------------
+    # Alert generation
+    # ------------------------------------------------------------------
+    alerts_created = []
+
+    for section_result in results:
+        section_type = section_result["section_type"]
+
+        # 1. Drift anomaly alerts
+        anomaly_info = anomaly_results.get(section_type)
+        if anomaly_info and anomaly_info["is_anomalous"]:
+            severity_map = {"extreme": "critical", "high": "high", "elevated": "medium"}
+            severity = severity_map.get(anomaly_info["anomaly_level"], "medium")
+            alert = Alert(
+                company_id=filing.company_id,
+                filing_id=filing.id,
+                alert_type="drift_anomaly",
+                severity=severity,
+                message=(
+                    f"Anomalous drift detected in {section_type}: "
+                    f"z-score {anomaly_info['company_z_score']:.2f} "
+                    f"({anomaly_info['anomaly_level']} level)"
+                ),
+                metadata_={
+                    "section_type": section_type,
+                    "z_score": anomaly_info["company_z_score"],
+                    "anomaly_level": anomaly_info["anomaly_level"],
+                    "company_mean": anomaly_info["company_mean"],
+                    "company_stddev": anomaly_info["company_stddev"],
+                    "cosine_distance": section_result["cosine_distance"],
+                },
+            )
+            db.add(alert)
+            alerts_created.append({"alert_type": "drift_anomaly", "section_type": section_type, "severity": severity})
+
+        # 2. Critical risk language alerts (from sentence-level risk scoring)
+        sent = section_result.get("_scored_changes")
+        if sent:
+            risk_summary = sent.get("risk_summary", {})
+            if risk_summary.get("critical_changes", 0) > 0:
+                alert = Alert(
+                    company_id=filing.company_id,
+                    filing_id=filing.id,
+                    alert_type="critical_risk_language",
+                    severity="critical",
+                    message=(
+                        f"Critical risk language detected in {section_type}: "
+                        f"{risk_summary['critical_changes']} critical change(s), "
+                        f"max risk score {risk_summary.get('max_risk_score', 0):.4f}"
+                    ),
+                    metadata_={
+                        "section_type": section_type,
+                        "critical_changes": risk_summary["critical_changes"],
+                        "high_risk_changes": risk_summary.get("high_risk_changes", 0),
+                        "max_risk_score": risk_summary.get("max_risk_score", 0),
+                        "max_risk_level": risk_summary.get("max_risk_level", "unknown"),
+                    },
+                )
+                db.add(alert)
+                alerts_created.append({"alert_type": "critical_risk_language", "section_type": section_type, "severity": "critical"})
+
+        # 3. Phrase change alerts (priority phrases appeared or disappeared)
+        phrases = section_result.get("phrases", {})
+        priority = phrases.get("priority", {})
+        appeared = priority.get("appeared", [])
+        disappeared = priority.get("disappeared", [])
+        if appeared or disappeared:
+            alert = Alert(
+                company_id=filing.company_id,
+                filing_id=filing.id,
+                alert_type="phrase_change",
+                severity="high",
+                message=(
+                    f"Priority phrase changes in {section_type}: "
+                    f"{len(appeared)} appeared, {len(disappeared)} disappeared"
+                ),
+                metadata_={
+                    "section_type": section_type,
+                    "appeared": appeared,
+                    "disappeared": disappeared,
+                },
+            )
+            db.add(alert)
+            alerts_created.append({"alert_type": "phrase_change", "section_type": section_type, "severity": "high"})
+
+        # 4. Obfuscation alerts
+        obfuscation_data = section_result.get("obfuscation", {})
+        if obfuscation_data.get("overall_obfuscation_score", 0) > 0.5:
+            alert = Alert(
+                company_id=filing.company_id,
+                filing_id=filing.id,
+                alert_type="obfuscation_detected",
+                severity="high",
+                message=(
+                    f"High obfuscation score in {section_type}: "
+                    f"{obfuscation_data['overall_obfuscation_score']:.4f}"
+                ),
+                metadata_={
+                    "section_type": section_type,
+                    "overall_obfuscation_score": obfuscation_data["overall_obfuscation_score"],
+                    "density_change": obfuscation_data.get("density_change"),
+                    "specificity_change": obfuscation_data.get("specificity_change"),
+                    "readability_change": obfuscation_data.get("readability_change"),
+                    "detected_euphemisms": obfuscation_data.get("detected_euphemisms", []),
+                },
+            )
+            db.add(alert)
+            alerts_created.append({"alert_type": "obfuscation_detected", "section_type": section_type, "severity": "high"})
+
     await db.commit()
+
+    # Strip internal keys before returning
+    clean_results = [
+        {k: v for k, v in r.items() if not k.startswith("_")}
+        for r in results
+    ]
 
     return {
         "filing_id": filing.id,
         "prev_filing_id": prev_filing.id,
         "form_type": filing.form_type,
-        "sections_analyzed": len(results),
-        "results": results,
+        "sections_analyzed": len(clean_results),
+        "results": clean_results,
         "anomaly": anomaly_results,
         "trends": trend_result,
+        "alerts_created": alerts_created,
     }
 
 

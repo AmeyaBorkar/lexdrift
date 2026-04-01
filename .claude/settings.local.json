@@ -35,7 +35,9 @@
       "Bash(curl -s -X POST \"http://127.0.0.1:8000/filings/2/analyze\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/api/research.py'\\).read\\(\\)\\); print\\('research.py: syntax OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/lexdrift/main.py'\\).read\\(\\)\\); print\\('main.py: syntax OK'\\)\")",
-      "Bash(python -m pytest tests/ -v --tb=short)"
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(find \"C:\\\\Users\\\\ameya\\\\Documents\\\\FiananceProject\\\\lexdrift/tests\" -name \"test_*.py\" -exec wc -l {} +)",
+      "Bash(python:*)"
     ]
   }
 }
