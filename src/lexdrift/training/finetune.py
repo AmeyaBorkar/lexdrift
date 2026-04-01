@@ -407,6 +407,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=MAX_PAIRS_PER_SECTION,
         help=f"Max pairs per (company, section) (default: {MAX_PAIRS_PER_SECTION})",
     )
+    parser.add_argument(
+        "--elite",
+        action="store_true",
+        help=(
+            "Use elite training data generator (text-level signals only, "
+            "no circular model dependency). Requires raw section text in the "
+            "database but does NOT require prior analysis runs."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -435,15 +444,23 @@ def main(argv: list[str] | None = None) -> None:
     SessionLocal = sessionmaker(bind=engine)
 
     with SessionLocal() as session:
-        pairs = generate_training_pairs(
-            session,
-            max_pairs_per_section=args.max_pairs,
-        )
+        if args.elite:
+            from lexdrift.training.data_quality import generate_elite_pairs
+
+            logger.info("Using elite data generator (text-level signals, no model labels)")
+            pairs = generate_elite_pairs(session, max_pairs=args.max_pairs)
+        else:
+            pairs = generate_training_pairs(
+                session,
+                max_pairs_per_section=args.max_pairs,
+            )
 
     if not pairs:
         logger.error(
-            "No training pairs generated.  Ensure the diff pipeline has been "
-            "run (sentence_changes table must be populated)."
+            "No training pairs generated.  %s",
+            "Ensure raw section text exists in the database (run backfill first)."
+            if args.elite
+            else "Ensure the diff pipeline has been run (sentence_changes table must be populated).",
         )
         sys.exit(1)
 
