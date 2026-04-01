@@ -71,7 +71,8 @@
       "Bash(npm install:*)",
       "Bash(npx tsc:*)",
       "Bash(npx next:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(curl -s \"http://127.0.0.1:8000/companies/TSLA/filings?limit=2\")"
     ]
   }
 }

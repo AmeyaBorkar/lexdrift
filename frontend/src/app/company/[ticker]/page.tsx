@@ -298,7 +298,7 @@ export default function CompanyPage() {
                 ) : (
                   filings.map((f) => (
                     <tr
-                      key={f.id}
+                      key={f.accession_number}
                       className="border-b border-[#1a1a1a] hover:bg-[#1a1a1a]/50 transition-colors"
                     >
                       <td className="px-6 py-3 text-[#e5e5e5]">
@@ -310,23 +310,29 @@ export default function CompanyPage() {
                         </span>
                       </td>
                       <td className="px-6 py-3">
-                        <StatusBadge processed={f.status === "analyzed"} />
+                        <StatusBadge processed={f.db_status === "analyzed"} />
                       </td>
                       <td className="px-6 py-3 font-mono text-xs text-[#737373] truncate max-w-[200px]">
                         {f.accession_number}
                       </td>
                       <td className="px-6 py-3 text-right">
-                        <button
-                          onClick={() => handleAnalyze(f.id)}
-                          disabled={analyzingId === f.id}
-                          className="text-xs text-[#c8a97e] hover:text-[#c8a97e]/80 transition-colors disabled:opacity-50"
-                        >
-                          {analyzingId === f.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin inline" />
-                          ) : (
-                            "Analyze"
-                          )}
-                        </button>
+                        {f.id ? (
+                          <button
+                            onClick={() => handleAnalyze(f.id!)}
+                            disabled={analyzingId === f.id}
+                            className="text-xs text-[#c8a97e] hover:text-[#c8a97e]/80 transition-colors disabled:opacity-50"
+                          >
+                            {analyzingId === f.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin inline" />
+                            ) : f.db_status === "analyzed" ? (
+                              "Re-analyze"
+                            ) : (
+                              "Analyze"
+                            )}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-[#737373]">Not ingested</span>
+                        )}
                       </td>
                     </tr>
                   ))

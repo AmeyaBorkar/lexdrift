@@ -70,16 +70,18 @@ async def list_filings(
     total = len(filings)
     filings = filings[offset : offset + limit]
 
-    # Check which filings are already in our DB
+    # Check which filings are already in our DB — return their ID and status
     accession_numbers = [f["accession_number"] for f in filings]
     if accession_numbers:
-        stmt = select(Filing.accession_number, Filing.status).where(
+        stmt = select(Filing.accession_number, Filing.id, Filing.status).where(
             Filing.accession_number.in_(accession_numbers)
         )
         result = await db.execute(stmt)
-        db_filings = {row[0]: row[1] for row in result.all()}
+        db_filings = {row[0]: {"id": row[1], "status": row[2]} for row in result.all()}
         for f in filings:
-            f["db_status"] = db_filings.get(f["accession_number"])
+            db_info = db_filings.get(f["accession_number"])
+            f["db_status"] = db_info["status"] if db_info else None
+            f["id"] = db_info["id"] if db_info else None
 
     # Serialize dates to strings
     for f in filings:

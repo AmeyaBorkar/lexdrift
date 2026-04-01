@@ -13,15 +13,16 @@ export interface Company {
 }
 
 export interface Filing {
-  id: number;
+  id?: number;
   accession_number: string;
   form_type: string;
   filing_date: string;
   report_date?: string;
-  status: string;
+  status?: string;
   sections?: { type: string; word_count: number }[];
   document_url?: string;
-  db_status?: string;
+  db_status?: string | null;
+  primary_document?: string;
 }
 
 export interface Section {
