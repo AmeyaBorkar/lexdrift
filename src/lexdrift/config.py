@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/0"
 
     # NLP
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    finbert_model: str = "ProsusAI/finbert"
+    use_finbert_sentiment: bool = True
     spacy_model: str = "en_core_web_sm"
     embedding_chunk_size: int = 2000
     embedding_chunk_overlap: int = 400

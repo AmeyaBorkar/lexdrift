@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,6 +12,9 @@ from lexdrift.api.research import router as research_router
 from lexdrift.db.engine import engine
 from lexdrift.db.models import Base
 from lexdrift.edgar.client import edgar_client
+from lexdrift.nlp.phrases import bootstrap_corpus_from_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -18,6 +22,12 @@ async def lifespan(app: FastAPI):
     # Create tables on startup (dev convenience; use Alembic in production)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Bootstrap TF-IDF corpus from existing sections to avoid cold-start
+    try:
+        count = bootstrap_corpus_from_db()
+        logger.info("TF-IDF corpus bootstrapped from %d sections", count)
+    except Exception:
+        logger.warning("Failed to bootstrap TF-IDF corpus", exc_info=True)
     yield
     await edgar_client.close()
     await engine.dispose()

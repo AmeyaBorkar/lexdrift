@@ -276,7 +276,20 @@ def _detect_toc_zone(text: str) -> tuple[int, int]:
 
 _CROSS_REFERENCE_PATTERNS = re.compile(
     r"see\s+item|refer\s+to\s+item|incorporated\s+by\s+reference|"
-    r"filed\s+as\s+exhibit|included\s+in\s+part",
+    r"filed\s+as\s+exhibit|included\s+in\s+part|"
+    r"information\s+required\s+by\s+this\s+item\s+is\s+included\s+in|"
+    r"information\s+relating\s+to\s+this\s+item\s+is\s+set\s+forth\s+in|"
+    r"reference\s+is\s+made\s+to\s+the\s+information|"
+    r"the\s+information\s+required\s+by\s+this\s+item\s+is\s+incorporated|"
+    r"this\s+item\s+is\s+not\s+applicable|"
+    r"response\s+to\s+this\s+item\s+is\s+included\s+in|"
+    r"for\s+a\s+discussion.*?see\s+(?:part|note|item)",
+    re.IGNORECASE,
+)
+
+# Patterns to find where a cross-reference points to
+_XREF_TARGET_PATTERN = re.compile(
+    r"(?:see|refer\s+to)\s+(?:note|footnote)\s+(\d+)",
     re.IGNORECASE,
 )
 
@@ -287,11 +300,93 @@ def _is_cross_reference(text: str) -> bool:
     Cross-references are short sections (under 200 words) that say things like
     'See Item 2 below' or 'Information required by this item is incorporated
     by reference' instead of containing actual disclosure content.
+
+    Also catches:
+    - "Not applicable" or "None" as the entire section body
+    - Sections under 20 words without a complete sentence
     """
     words = text.split()
     if len(words) >= 200:
         return False
-    return bool(_CROSS_REFERENCE_PATTERNS.search(text))
+
+    # Strip leading heading (e.g., "Item 1B. Unresolved Staff Comments")
+    body = re.sub(
+        r"^(?:item\s+\d+[a-z]?[\.\s:\-—]*\S*\s*)+",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+    body_lower = body.lower().strip().rstrip(".")
+
+    # "None" or "Not applicable" as the entire section body
+    if body_lower in ("none", "not applicable", "n/a", "na"):
+        return True
+
+    # Regex-based cross-reference detection
+    if _CROSS_REFERENCE_PATTERNS.search(text):
+        return True
+
+    # Sections under 20 words that don't contain a complete sentence
+    # (no period after 10+ words of actual content)
+    body_words = body.split()
+    if len(body_words) < 20:
+        # Check if there's a period after at least 10 words of content
+        sentences = re.split(r"[.!?]", body)
+        has_complete_sentence = any(
+            len(s.strip().split()) >= 10 for s in sentences if s.strip()
+        )
+        if not has_complete_sentence:
+            return True
+
+    return False
+
+
+def _try_resolve_cross_reference(text: str, sections: dict[str, str]) -> str | None:
+    """Try to find the actual content a cross-reference points to.
+
+    For example, if the stub says 'See Note 15 to Consolidated Financial
+    Statements', search for 'Note 15' in the financial_statements section.
+
+    Returns the referenced content if found, otherwise None.
+    """
+    match = _XREF_TARGET_PATTERN.search(text)
+    if not match:
+        return None
+
+    note_num = match.group(1)
+    target_pattern = re.compile(
+        rf"note\s+{note_num}\b[^\n]*\n",
+        re.IGNORECASE,
+    )
+
+    # Search in financial_statements first, then all other sections
+    search_order = []
+    if "financial_statements" in sections:
+        search_order.append(sections["financial_statements"])
+    for sec_type, sec_text in sections.items():
+        if sec_type != "financial_statements":
+            search_order.append(sec_text)
+
+    for sec_text in search_order:
+        note_match = target_pattern.search(sec_text)
+        if note_match:
+            # Extract content from the note heading until the next note or
+            # 5000 chars, whichever comes first
+            start = note_match.start()
+            next_note = re.search(
+                rf"note\s+(?!{note_num}\b)\d+\b",
+                sec_text[start + len(note_match.group()):],
+                re.IGNORECASE,
+            )
+            if next_note:
+                end = start + len(note_match.group()) + next_note.start()
+            else:
+                end = min(start + 5000, len(sec_text))
+            content = sec_text[start:end].strip()
+            if len(content.split()) >= 50:
+                return content
+
+    return None
 
 
 # More aggressive patterns for the second pass — handle ALL-CAPS headings,
@@ -347,16 +442,18 @@ def extract_sections(text: str, form_type: str) -> dict[str, str]:
 
     # Extract text between consecutive boundaries
     sections: dict[str, str] = {}
+    cross_ref_stubs: dict[str, str] = {}  # section_type -> stub text for resolution
     for i, (pos, section_type) in enumerate(boundaries):
         end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text)
         section_text = text[pos:end].strip()
 
-        # Skip cross-reference stubs
+        # Detect cross-reference stubs — save for later resolution
         if _is_cross_reference(section_text):
             logger.debug(
-                "Skipping cross-reference stub for %s (%d words)",
+                "Cross-reference stub for %s (%d words)",
                 section_type, len(section_text.split()),
             )
+            cross_ref_stubs[section_type] = section_text
             continue
 
         # Keep the longer match for each section type
@@ -443,6 +540,21 @@ def extract_sections(text: str, form_type: str) -> dict[str, str]:
     if not sections:
         logger.warning("No valid sections extracted, returning full text")
         return {"full_text": text}
+
+    # ------------------------------------------------------------------
+    # Cross-reference resolution: for stubs we skipped, try to find the
+    # actual content they point to in other extracted sections.
+    # ------------------------------------------------------------------
+    for sec_type, stub_text in cross_ref_stubs.items():
+        if sec_type in sections:
+            continue  # already resolved through a different match
+        resolved = _try_resolve_cross_reference(stub_text, sections)
+        if resolved:
+            logger.info(
+                "Resolved cross-reference for %s (%d words)",
+                sec_type, len(resolved.split()),
+            )
+            sections[sec_type] = resolved
 
     return sections
 

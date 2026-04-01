@@ -606,6 +606,15 @@ def main(argv: list[str] | None = None) -> None:
         step_print_stats(summary)
         return
 
+    # Bootstrap TF-IDF corpus before analysis to avoid cold-start
+    _info("Bootstrapping TF-IDF corpus from existing sections...")
+    try:
+        from lexdrift.nlp.phrases import bootstrap_corpus_from_db
+        corpus_count = bootstrap_corpus_from_db()
+        _info(f"TF-IDF corpus bootstrapped from {corpus_count} sections")
+    except Exception as e:
+        _warn(f"TF-IDF corpus bootstrap failed: {e}")
+
     # === Step 2: Analyze ===
     _step(2, total_steps, "Analyze all filings")
     t0 = time.time()

@@ -370,6 +370,47 @@ def compare_keyphrases(
     }
 
 
+def bootstrap_corpus_from_db() -> int:
+    """Bootstrap the TF-IDF corpus from all Section records in the database.
+
+    Queries all sections with word_count >= 100 and feeds them into the
+    corpus document-frequency counter. This solves the cold-start problem
+    where IDF is meaningless on the first filing.
+
+    Uses a synchronous session internally so it can be called from both
+    sync and async contexts (e.g., FastAPI lifespan).
+
+    Returns:
+        Number of sections processed.
+    """
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session as SyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    from lexdrift.config import settings
+    from lexdrift.db.models import Section
+
+    db_url = settings.database_url
+    sync_url = db_url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2")
+
+    engine = create_engine(sync_url, echo=False, future=True)
+    SessionFactory = sessionmaker(bind=engine, class_=SyncSession, expire_on_commit=False)
+
+    count = 0
+    with SessionFactory() as session:
+        sections = session.execute(
+            select(Section.section_text).where(Section.word_count >= 100)
+        ).scalars().all()
+
+        for text in sections:
+            if text:
+                update_corpus(text)
+                count += 1
+
+    logger.info("Bootstrapped TF-IDF corpus from %d sections", count)
+    return count
+
+
 def compare_phrases(
     prev_text: str,
     curr_text: str,
