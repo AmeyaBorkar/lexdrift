@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getWatchlists, createWatchlist, addToWatchlist } from "@/lib/api";
-import type { Watchlist } from "@/lib/api";
+import type { Watchlist as WatchlistBase } from "@/lib/api";
+
+// Extend with local tickers tracking (API doesn't return tickers on the watchlist object)
+interface Watchlist extends WatchlistBase {
+  tickers: string[];
+}
 import { ChevronRight, Loader2, Plus, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -23,7 +28,7 @@ export default function WatchlistPage() {
     setLoading(true);
     try {
       const res = await getWatchlists();
-      setWatchlists(res ?? []);
+      setWatchlists((res ?? []).map((wl) => ({ ...wl, tickers: [] })));
     } catch (err) {
       console.error("Failed to fetch watchlists:", err);
       setWatchlists([]);
@@ -55,10 +60,17 @@ export default function WatchlistPage() {
     if (!tickerInput.trim()) return;
     setAddingTicker(true);
     try {
-      await addToWatchlist(watchlistId, tickerInput.trim().toUpperCase());
+      const addedTicker = tickerInput.trim().toUpperCase();
+      await addToWatchlist(watchlistId, addedTicker);
+      setWatchlists((prev) =>
+        prev.map((wl) =>
+          wl.id === watchlistId
+            ? { ...wl, tickers: [...wl.tickers, addedTicker] }
+            : wl
+        )
+      );
       setTickerInput("");
       setAddingToId(null);
-      await fetchWatchlists();
     } catch (err) {
       console.error("Failed to add ticker:", err);
     } finally {

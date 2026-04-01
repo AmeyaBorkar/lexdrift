@@ -68,23 +68,16 @@ const driftColumns: Column<ScreenerEntry & Record<string, unknown>>[] = [
     ),
   },
   {
-    key: "company_name",
+    key: "name",
     header: "Company",
     sortable: true,
   },
   {
-    key: "section_type",
-    header: "Section",
-    render: (row) => (
-      <span className="text-muted-foreground">{row.section_type}</span>
-    ),
-  },
-  {
-    key: "latest_drift_score",
+    key: "cosine_distance",
     header: "Drift",
     sortable: true,
     render: (row) => {
-      const score = row.latest_drift_score;
+      const score = row.cosine_distance as number;
       const severity: "critical" | "high" | "medium" | "low" =
         score >= 0.5 ? "critical" : score >= 0.3 ? "high" : score >= 0.15 ? "medium" : "low";
       return (
@@ -95,11 +88,11 @@ const driftColumns: Column<ScreenerEntry & Record<string, unknown>>[] = [
     },
   },
   {
-    key: "filed_date",
+    key: "filing_date",
     header: "Filed",
     sortable: true,
     render: (row) => (
-      <span className="text-muted-foreground">{row.filed_date}</span>
+      <span className="text-muted-foreground">{row.filing_date}</span>
     ),
   },
 ];
@@ -121,7 +114,7 @@ export default function DashboardPage() {
       try {
         const [alertsData, screenerData] = await Promise.allSettled([
           getAlerts(),
-          getScreener("risk_factors", "latest_drift_score", 10),
+          getScreener("risk_factors", "cosine_distance", 10),
         ]);
 
         if (cancelled) return;
@@ -147,7 +140,7 @@ export default function DashboardPage() {
   const avgDrift =
     screener.length > 0
       ? (
-          screener.reduce((sum, s) => sum + s.latest_drift_score, 0) /
+          screener.reduce((sum, s) => sum + (s.cosine_distance as number), 0) /
           screener.length *
           100
         ).toFixed(1) + "%"

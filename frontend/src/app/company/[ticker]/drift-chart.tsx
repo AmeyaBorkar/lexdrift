@@ -12,8 +12,8 @@ import {
 import type { DriftScore } from "@/lib/api";
 
 interface ChartPoint {
-  filed_date: string;
-  drift_score: number;
+  filing_date: string;
+  cosine_distance: number;
 }
 
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
@@ -40,11 +40,11 @@ export default function DriftChart({ data }: { data: DriftScore[] }) {
   const chartData: ChartPoint[] = [...data]
     .sort(
       (a, b) =>
-        new Date(a.filed_date).getTime() - new Date(b.filed_date).getTime()
+        new Date(a.filing_date).getTime() - new Date(b.filing_date).getTime()
     )
     .map((d) => ({
-      filed_date: d.filed_date,
-      drift_score: d.drift_score,
+      filing_date: d.filing_date,
+      cosine_distance: d.cosine_distance,
     }));
 
   return (
@@ -59,7 +59,7 @@ export default function DriftChart({ data }: { data: DriftScore[] }) {
           vertical={false}
         />
         <XAxis
-          dataKey="filed_date"
+          dataKey="filing_date"
           tick={{ fontSize: 11, fill: "#737373" }}
           axisLine={{ stroke: "#1a1a1a" }}
           tickLine={false}
@@ -73,7 +73,7 @@ export default function DriftChart({ data }: { data: DriftScore[] }) {
         <Tooltip content={<CustomTooltip />} />
         <Line
           type="monotone"
-          dataKey="drift_score"
+          dataKey="cosine_distance"
           stroke="#c8a97e"
           strokeWidth={2}
           dot={{ r: 3, fill: "#c8a97e", stroke: "#0a0a0a", strokeWidth: 2 }}

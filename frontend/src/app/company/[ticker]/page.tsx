@@ -83,7 +83,7 @@ export default function CompanyPage() {
     if (!ticker) return;
     try {
       const res = await getDriftTimeline(ticker, timelineSection);
-      setTimeline(res?.timeline ?? []);
+      setTimeline(res ?? []);
     } catch {
       setTimeline([]);
     }
@@ -122,23 +122,24 @@ export default function CompanyPage() {
     }
   }
 
-  const companyName = company?.name ?? overview?.company_name ?? ticker;
+  const companyName = company?.name ?? overview?.company ?? ticker;
   const latestDrift = overview?.latest_drift;
-  const totalFilings = overview?.total_filings ?? filings.length;
-  const velocity = kinematics?.velocity;
-  const alertsCount = overview?.alerts_count ?? 0;
+  const totalFilings = overview?.latest_drift ? Object.keys(overview.latest_drift).length : filings.length;
+  const firstSection = kinematics ? Object.values(kinematics)[0] : undefined;
+  const velocity = firstSection?.latest_velocity;
+  const alertsCount = 0;
 
-  // Split phrases: newly seen vs recurring
+  // Split phrases: new vs recurring based on status
   const sortedPhrases = [...phrases].sort(
     (a, b) =>
-      new Date(b.last_seen_date).getTime() -
-      new Date(a.last_seen_date).getTime()
+      new Date(b.filing_date).getTime() -
+      new Date(a.filing_date).getTime()
   );
   const recentPhrases = sortedPhrases.filter(
-    (p) => p.first_seen_date === p.last_seen_date
+    (p) => p.status === "added"
   );
   const recurringPhrases = sortedPhrases.filter(
-    (p) => p.first_seen_date !== p.last_seen_date
+    (p) => p.status !== "added"
   );
 
   const selectedSectionLabel =
@@ -195,9 +196,9 @@ export default function CompanyPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <OverviewCard
             label="Latest Drift"
-            value={latestDrift != null ? latestDrift.toFixed(4) : "--"}
+            value={latestDrift != null ? String(Object.keys(latestDrift).length) + " sections" : "--"}
             icon={<TrendingUp className="h-4 w-4" />}
-            accent={latestDrift != null && latestDrift > 0.1}
+            accent={latestDrift != null && Object.keys(latestDrift).length > 0}
           />
           <OverviewCard
             label="Active Alerts"
@@ -301,7 +302,7 @@ export default function CompanyPage() {
                       className="border-b border-[#1a1a1a] hover:bg-[#1a1a1a]/50 transition-colors"
                     >
                       <td className="px-6 py-3 text-[#e5e5e5]">
-                        {f.filed_date}
+                        {f.filing_date}
                       </td>
                       <td className="px-6 py-3">
                         <span className="rounded bg-[#1a1a1a] px-2 py-0.5 text-xs font-mono">
@@ -309,7 +310,7 @@ export default function CompanyPage() {
                         </span>
                       </td>
                       <td className="px-6 py-3">
-                        <StatusBadge processed={f.processed} />
+                        <StatusBadge processed={f.status === "analyzed"} />
                       </td>
                       <td className="px-6 py-3 font-mono text-xs text-[#737373] truncate max-w-[200px]">
                         {f.accession_number}
@@ -348,16 +349,16 @@ export default function CompanyPage() {
               {recentPhrases.length === 0 ? (
                 <p className="text-xs text-[#737373]">No new phrases detected.</p>
               ) : (
-                recentPhrases.slice(0, 20).map((p) => (
+                recentPhrases.slice(0, 20).map((p, idx) => (
                   <div
-                    key={p.id}
+                    key={`${p.phrase}-${idx}`}
                     className="flex items-start justify-between gap-3 rounded bg-emerald-400/5 border border-emerald-400/10 px-3 py-2"
                   >
                     <span className="text-xs text-emerald-300">
                       {p.phrase}
                     </span>
                     <span className="shrink-0 text-xs text-[#737373]">
-                      {p.first_seen_date}
+                      {p.filing_date}
                     </span>
                   </div>
                 ))
@@ -376,17 +377,17 @@ export default function CompanyPage() {
               {recurringPhrases.length === 0 ? (
                 <p className="text-xs text-[#737373]">No recurring phrases found.</p>
               ) : (
-                recurringPhrases.slice(0, 20).map((p) => (
+                recurringPhrases.slice(0, 20).map((p, idx) => (
                   <div
-                    key={p.id}
+                    key={`${p.phrase}-${idx}`}
                     className="flex items-start justify-between gap-3 rounded bg-[#c8a97e]/5 border border-[#c8a97e]/10 px-3 py-2"
                   >
                     <div className="min-w-0">
                       <span className="text-xs text-[#e5e5e5]">{p.phrase}</span>
-                      <span className="ml-2 text-[10px] text-[#737373]">x{p.frequency}</span>
+                      <span className="ml-2 text-[10px] text-[#737373]">{p.status}</span>
                     </div>
                     <span className="shrink-0 text-xs text-[#737373]">
-                      {p.first_seen_date} - {p.last_seen_date}
+                      {p.filing_date}
                     </span>
                   </div>
                 ))

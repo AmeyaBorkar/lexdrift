@@ -14,7 +14,7 @@ const SECTION_TYPES = [
   { value: "quantitative_disclosures", label: "Quantitative Disclosures" },
 ];
 
-type SortField = "latest_drift_score" | "filed_date" | "company_name" | "ticker";
+type SortField = "cosine_distance" | "filing_date" | "name" | "ticker";
 type SortDirection = "asc" | "desc";
 
 function SkeletonRow() {
@@ -34,7 +34,7 @@ export default function ScreenerPage() {
   const [sectionType, setSectionType] = useState("risk_factors");
   const [data, setData] = useState<ScreenerEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sortField, setSortField] = useState<SortField>("latest_drift_score");
+  const [sortField, setSortField] = useState<SortField>("cosine_distance");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -80,9 +80,9 @@ export default function ScreenerPage() {
   const columns: { key: string; label: string; sortable: boolean; sortKey?: SortField }[] = [
     { key: "rank", label: "#", sortable: false },
     { key: "ticker", label: "Ticker", sortable: true, sortKey: "ticker" },
-    { key: "company_name", label: "Company", sortable: true, sortKey: "company_name" },
-    { key: "latest_drift_score", label: "Drift Score", sortable: true, sortKey: "latest_drift_score" },
-    { key: "filed_date", label: "Filing Date", sortable: true, sortKey: "filed_date" },
+    { key: "name", label: "Company", sortable: true, sortKey: "name" },
+    { key: "cosine_distance", label: "Drift Score", sortable: true, sortKey: "cosine_distance" },
+    { key: "filing_date", label: "Filing Date", sortable: true, sortKey: "filing_date" },
   ];
 
   const selectedLabel =
@@ -178,12 +178,12 @@ export default function ScreenerPage() {
                         <td className="px-4 py-3 font-mono font-medium text-[#c8a97e]">
                           {row.ticker}
                         </td>
-                        <td className="px-4 py-3">{row.company_name}</td>
+                        <td className="px-4 py-3">{row.name}</td>
                         <td className="px-4 py-3 font-mono">
-                          {row.latest_drift_score.toFixed(4)}
+                          {row.cosine_distance.toFixed(4)}
                         </td>
                         <td className="px-4 py-3 text-[#737373]">
-                          {row.filed_date}
+                          {row.filing_date}
                         </td>
                       </tr>
                     ))}

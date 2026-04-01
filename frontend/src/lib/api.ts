@@ -1,153 +1,147 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — loosely typed to match backend JSON responses
 // ---------------------------------------------------------------------------
 
 export interface Company {
+  cik: string;
   ticker: string;
   name: string;
-  cik: string;
-  sector?: string;
-  sic_code?: string;
+  in_database?: boolean;
+  id?: number;
 }
 
 export interface Filing {
   id: number;
-  company_ticker: string;
   accession_number: string;
   form_type: string;
-  filed_date: string;
-  period_of_report?: string;
-  filing_url?: string;
-  processed: boolean;
+  filing_date: string;
+  report_date?: string;
+  status: string;
+  sections?: { type: string; word_count: number }[];
+  document_url?: string;
+  db_status?: string;
 }
 
 export interface Section {
-  id: number;
   filing_id: number;
   section_type: string;
-  content: string;
-  word_count?: number;
+  word_count: number;
+  text: string;
 }
 
 export interface DriftScore {
-  id: number;
-  filing_id: number;
-  previous_filing_id: number;
   section_type: string;
-  similarity_score: number;
-  drift_score: number;
-  filed_date: string;
-  period_of_report?: string;
-}
-
-export interface DriftTimeline {
-  ticker: string;
-  section_type: string;
-  timeline: DriftScore[];
-}
-
-export interface FilingDiff {
-  filing_id: number;
-  vs_filing_id: number;
-  section_type: string;
-  additions: string[];
-  deletions: string[];
-  modifications: DiffModification[];
-}
-
-export interface DiffModification {
-  old_text: string;
-  new_text: string;
-  similarity: number;
+  cosine_distance: number;
+  jaccard_distance: number;
+  added_words: number;
+  removed_words: number;
+  sentiment_delta: Record<string, number>;
+  filing_date: string;
+  form_type: string;
+  accession_number: string;
 }
 
 export interface SentenceChange {
-  id: number;
-  drift_score_id: number;
   change_type: string;
-  old_text?: string;
-  new_text?: string;
-  similarity_score?: number;
+  text: string;
+  matched_text?: string;
+  similarity?: number;
+  index?: number;
 }
 
 export interface ScreenerEntry {
   ticker: string;
-  company_name: string;
-  latest_drift_score: number;
-  section_type: string;
-  filed_date: string;
-  trend?: string;
+  name: string;
+  cosine_distance: number;
+  jaccard_distance: number;
+  added_words: number;
+  removed_words: number;
+  sentiment_delta: Record<string, number>;
+  filing_date: string;
 }
 
 export interface Phrase {
-  id: number;
-  ticker: string;
   phrase: string;
-  first_seen_date: string;
-  last_seen_date: string;
-  frequency: number;
-  section_type?: string;
+  section_type: string;
+  status: string;
+  filing_date: string;
+  form_type: string;
 }
 
 export interface Alert {
   id: number;
-  ticker: string;
   alert_type: string;
   severity: string;
   message: string;
-  created_at: string;
+  metadata?: Record<string, unknown>;
   read: boolean;
-  drift_score_id?: number;
+  created_at: string;
+  ticker: string;
+  company_name: string;
+  filing_date: string;
 }
 
 export interface Watchlist {
   id: number;
   name: string;
   created_at: string;
-  tickers: string[];
 }
 
 export interface ObfuscationResult {
-  filing_id: number;
-  score: number;
-  details: Record<string, unknown>;
+  section_type: string;
+  overall_obfuscation_score: number;
+  density_change: number;
+  specificity_change: number;
+  readability_change: number;
+  detected_euphemisms: string[];
 }
 
 export interface EntropyResult {
-  filing_id: number;
-  entropy: number;
-  section_entropies: Record<string, number>;
+  section_type: string;
+  kl_divergence: number;
+  novelty_score: number;
+  entropy_rate_change: number;
+  vocab_overlap: number;
 }
 
 export interface KinematicsResult {
-  ticker: string;
-  velocity: number;
-  acceleration: number;
-  timeline: { date: string; velocity: number; acceleration: number }[];
+  [section: string]: {
+    phase: string;
+    latest_velocity: number;
+    latest_acceleration: number;
+    latest_momentum: number;
+    velocity_mean: number;
+    periods_analyzed: number;
+    note?: string;
+  };
 }
 
 export interface OverviewResult {
   ticker: string;
-  company_name: string;
-  total_filings: number;
-  latest_drift?: number;
-  avg_drift?: number;
-  alerts_count: number;
-  latest_filing_date?: string;
+  company: string;
+  latest_drift: Record<string, Record<string, unknown>>;
+  anomaly: Record<string, Record<string, unknown>>;
+  kinematics: Record<string, Record<string, unknown>>;
+  trends: Record<string, unknown>;
 }
 
 export interface IngestResult {
   ticker: string;
-  form_type: string;
-  filings_ingested: number;
+  ingested: { accession: string; form_type: string; filing_date: string; sections: string[]; status: string }[];
+  count: number;
 }
 
 export interface AnalyzeResult {
   filing_id: number;
-  status: string;
-  sections_analyzed?: number;
+  prev_filing_id: number;
+  form_type: string;
+  sections_analyzed: number;
+  results: Record<string, unknown>[];
+  anomaly?: Record<string, unknown>;
+  trends?: Record<string, unknown>;
+  alerts_created?: Record<string, unknown>[];
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +184,6 @@ async function request<T>(
     throw new ApiError(res.status, `API error ${res.status}: ${detail}`, detail);
   }
 
-  // Handle 204 No Content
   if (res.status === 204) {
     return undefined as T;
   }
@@ -209,177 +202,172 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
 }
 
 // ---------------------------------------------------------------------------
-// Company endpoints
+// Companies — GET /companies, GET /companies/{ticker}
 // ---------------------------------------------------------------------------
 
-export async function searchCompanies(q: string): Promise<Company[]> {
-  return request<Company[]>(`/api/companies/search${qs({ q })}`);
+export async function searchCompanies(q: string) {
+  const res = await request<{ data: Company[]; total: number }>(`/companies${qs({ q })}`);
+  return res.data;
 }
 
-export async function getCompany(ticker: string): Promise<Company> {
-  return request<Company>(`/api/companies/${encodeURIComponent(ticker)}`);
+export async function getCompany(ticker: string) {
+  return request<Company>(`/companies/${encodeURIComponent(ticker)}`);
 }
 
 // ---------------------------------------------------------------------------
-// Filing endpoints
+// Filings — GET /companies/{ticker}/filings, POST /filings/ingest/{ticker}
 // ---------------------------------------------------------------------------
 
-export async function getCompanyFilings(
-  ticker: string,
-  formType?: string
-): Promise<Filing[]> {
-  return request<Filing[]>(
-    `/api/companies/${encodeURIComponent(ticker)}/filings${qs({ form_type: formType })}`
+export async function getCompanyFilings(ticker: string, formType?: string) {
+  const res = await request<{ data: Filing[]; total: number }>(
+    `/companies/${encodeURIComponent(ticker)}/filings${qs({ form_type: formType })}`
+  );
+  return res.data;
+}
+
+export async function ingestFilings(ticker: string, formType: string, limit: number) {
+  return request<IngestResult>(
+    `/filings/ingest/${encodeURIComponent(ticker)}${qs({ form_type: formType, limit })}`,
+    { method: "POST" }
   );
 }
 
-export async function ingestFilings(
-  ticker: string,
-  formType: string,
-  limit: number
-): Promise<IngestResult> {
-  return request<IngestResult>(`/api/filings/ingest`, {
-    method: "POST",
-    body: JSON.stringify({ ticker, form_type: formType, limit }),
-  });
+export async function getFiling(id: number) {
+  return request<Filing>(`/filings/${id}`);
 }
 
-export async function getFiling(id: number): Promise<Filing> {
-  return request<Filing>(`/api/filings/${id}`);
-}
-
-export async function getSection(
-  filingId: number,
-  sectionType: string
-): Promise<Section> {
+export async function getSection(filingId: number, sectionType: string) {
   return request<Section>(
-    `/api/filings/${filingId}/sections/${encodeURIComponent(sectionType)}`
+    `/filings/${filingId}/sections/${encodeURIComponent(sectionType)}`
   );
 }
 
-export async function analyzeFile(
-  filingId: number,
-  force?: boolean
-): Promise<AnalyzeResult> {
+// ---------------------------------------------------------------------------
+// Analysis — POST /filings/{id}/analyze
+// ---------------------------------------------------------------------------
+
+export async function analyzeFile(filingId: number, force?: boolean) {
   return request<AnalyzeResult>(
-    `/api/filings/${filingId}/analyze${qs({ force })}`,
+    `/filings/${filingId}/analyze${qs({ force })}`,
     { method: "POST" }
   );
 }
 
 // ---------------------------------------------------------------------------
-// Drift / diff endpoints
+// Drift — GET /companies/{ticker}/drift, GET /filings/{id}/diff
 // ---------------------------------------------------------------------------
 
-export async function getDriftTimeline(
-  ticker: string,
-  sectionType?: string
-): Promise<DriftTimeline> {
-  return request<DriftTimeline>(
-    `/api/drift/${encodeURIComponent(ticker)}/timeline${qs({ section_type: sectionType })}`
+export async function getDriftTimeline(ticker: string, sectionType?: string) {
+  const res = await request<{ ticker: string; data: DriftScore[]; total: number }>(
+    `/companies/${encodeURIComponent(ticker)}/drift${qs({ section_type: sectionType })}`
+  );
+  return res.data;
+}
+
+export async function getFilingDiff(filingId: number, vsId: number, sectionType: string) {
+  return request<{ filing_id: number; vs_filing_id: number; section_type: string; diff: string; stats: Record<string, unknown> }>(
+    `/filings/${filingId}/diff${qs({ vs: vsId, section_type: sectionType })}`
   );
 }
 
-export async function getFilingDiff(
-  filingId: number,
-  vsId: number,
-  sectionType: string
-): Promise<FilingDiff> {
-  return request<FilingDiff>(
-    `/api/drift/diff/${filingId}/${vsId}${qs({ section_type: sectionType })}`
+export async function getSentenceChanges(driftScoreId: number, changeType?: string) {
+  const res = await request<{ drift_score_id: number; data: SentenceChange[]; total: number }>(
+    `/drift/${driftScoreId}/sentences${qs({ change_type: changeType })}`
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Screener — GET /drift/screener
+// ---------------------------------------------------------------------------
+
+export async function getScreener(sectionType: string, sortBy?: string, limit?: number) {
+  const res = await request<{ data: ScreenerEntry[]; total: number }>(
+    `/drift/screener${qs({ section_type: sectionType, sort_by: sortBy, limit })}`
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Phrases — GET /companies/{ticker}/phrases
+// ---------------------------------------------------------------------------
+
+export async function getPhrases(ticker: string) {
+  const res = await request<{ ticker: string; data: Phrase[]; total: number }>(
+    `/companies/${encodeURIComponent(ticker)}/phrases`
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Alerts — GET /alerts, PUT /alerts/{id}/read
+// ---------------------------------------------------------------------------
+
+export async function getAlerts(unread?: boolean) {
+  const res = await request<{ data: Alert[]; total: number }>(
+    `/alerts${qs({ unread })}`
+  );
+  return res.data;
+}
+
+export async function markAlertRead(alertId: number) {
+  return request<{ id: number; read: boolean }>(
+    `/alerts/${alertId}/read`,
+    { method: "PUT" }
   );
 }
 
-export async function getSentenceChanges(
-  driftScoreId: number,
-  changeType?: string
-): Promise<SentenceChange[]> {
-  return request<SentenceChange[]>(
-    `/api/drift/changes/${driftScoreId}${qs({ change_type: changeType })}`
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Screener
+// Watchlists — POST /watchlists, GET /watchlists, POST /watchlists/{id}/companies
 // ---------------------------------------------------------------------------
 
-export async function getScreener(
-  sectionType: string,
-  sortBy?: string,
-  limit?: number
-): Promise<ScreenerEntry[]> {
-  return request<ScreenerEntry[]>(
-    `/api/screener${qs({ section_type: sectionType, sort_by: sortBy, limit })}`
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Phrases
-// ---------------------------------------------------------------------------
-
-export async function getPhrases(ticker: string): Promise<Phrase[]> {
-  return request<Phrase[]>(
-    `/api/phrases/${encodeURIComponent(ticker)}`
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Alerts
-// ---------------------------------------------------------------------------
-
-export async function getAlerts(unread?: boolean): Promise<Alert[]> {
-  return request<Alert[]>(`/api/alerts${qs({ unread })}`);
-}
-
-export async function markAlertRead(alertId: number): Promise<Alert> {
-  return request<Alert>(`/api/alerts/${alertId}/read`, { method: "POST" });
-}
-
-// ---------------------------------------------------------------------------
-// Watchlists
-// ---------------------------------------------------------------------------
-
-export async function createWatchlist(name: string): Promise<Watchlist> {
-  return request<Watchlist>(`/api/watchlists`, {
+export async function createWatchlist(name: string) {
+  return request<Watchlist>(`/watchlists`, {
     method: "POST",
     body: JSON.stringify({ name }),
   });
 }
 
-export async function getWatchlists(): Promise<Watchlist[]> {
-  return request<Watchlist[]>(`/api/watchlists`);
+export async function getWatchlists() {
+  const res = await request<{ data: Watchlist[]; total: number }>(`/watchlists`);
+  return res.data;
 }
 
-export async function addToWatchlist(
-  watchlistId: number,
-  ticker: string
-): Promise<Watchlist> {
-  return request<Watchlist>(`/api/watchlists/${watchlistId}/add`, {
-    method: "POST",
-    body: JSON.stringify({ ticker }),
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Advanced analysis
-// ---------------------------------------------------------------------------
-
-export async function getObfuscation(filingId: number): Promise<ObfuscationResult> {
-  return request<ObfuscationResult>(`/api/analysis/obfuscation/${filingId}`);
-}
-
-export async function getEntropy(filingId: number): Promise<EntropyResult> {
-  return request<EntropyResult>(`/api/analysis/entropy/${filingId}`);
-}
-
-export async function getKinematics(ticker: string): Promise<KinematicsResult> {
-  return request<KinematicsResult>(
-    `/api/analysis/kinematics/${encodeURIComponent(ticker)}`
+export async function addToWatchlist(watchlistId: number, ticker: string) {
+  return request<{ watchlist_id: number; ticker: string; company_id: number }>(
+    `/watchlists/${watchlistId}/companies`,
+    { method: "POST", body: JSON.stringify({ ticker }) }
   );
 }
 
-export async function getOverview(ticker: string): Promise<OverviewResult> {
+// ---------------------------------------------------------------------------
+// Research — POST /research/obfuscation/{id}, POST /research/entropy/{id},
+//            GET /research/kinematics/{ticker}, GET /research/overview/{ticker}
+// ---------------------------------------------------------------------------
+
+export async function getObfuscation(filingId: number) {
+  return request<{ filing_id: number; sections: ObfuscationResult[] }>(
+    `/research/obfuscation/${filingId}`,
+    { method: "POST" }
+  );
+}
+
+export async function getEntropy(filingId: number) {
+  return request<{ filing_id: number; sections: EntropyResult[] }>(
+    `/research/entropy/${filingId}`,
+    { method: "POST" }
+  );
+}
+
+export async function getKinematics(ticker: string) {
+  const res = await request<{ ticker: string; data: KinematicsResult }>(
+    `/research/kinematics/${encodeURIComponent(ticker)}`
+  );
+  return res.data;
+}
+
+export async function getOverview(ticker: string) {
   return request<OverviewResult>(
-    `/api/companies/${encodeURIComponent(ticker)}/overview`
+    `/research/overview/${encodeURIComponent(ticker)}`
   );
 }
