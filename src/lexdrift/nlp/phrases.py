@@ -29,6 +29,21 @@ _STOPWORDS: frozenset[str] = frozenset({
     "does", "did", "been",
 })
 
+# Words that are extremely common and make n-grams meaningless
+_FILLER_WORDS: frozenset[str] = frozenset({
+    *_STOPWORDS,
+    "including", "related", "certain", "various", "based", "third",
+    "party", "first", "second", "new", "well", "general", "part",
+    "set", "made", "use", "used", "using", "number", "time",
+    "year", "years", "period", "date", "total", "per", "due",
+    "subject", "respect", "result", "results", "addition",
+    "order", "under", "over", "upon", "within", "both", "same",
+    "prior", "current", "following", "described", "noted", "see",
+    "designed", "expected", "required", "provided", "included",
+    "continue", "continued", "continued", "continues",
+    "experiences", "experience",
+})
+
 _STOPWORD_NGRAMS: frozenset[str] = frozenset({
     "u s", "the u", "table of", "of contents", "table of contents",
 })
@@ -39,30 +54,44 @@ _ITEM_NUMBER_PATTERN = re.compile(r"\bitem\s+\d", re.IGNORECASE)
 def _is_noise_ngram(ngram: str) -> bool:
     """Return True if the n-gram is noise that should be filtered out.
 
-    Filters:
-    - N-grams composed entirely of stopwords
-    - Substrings of 'table of contents'
-    - N-grams containing 'item' followed by a number (TOC references)
-    - Known broken-abbreviation artifacts like 'u s', 'the u'
+    Aggressive filtering to ensure only substantive phrases surface.
     """
     ngram_lower = ngram.lower().strip()
+    tokens = ngram_lower.split()
 
-    # Check known noise n-grams
+    if not tokens:
+        return True
+
+    # Known noise
     if ngram_lower in _STOPWORD_NGRAMS:
         return True
 
-    # Check if it's a substring of "table of contents"
+    # Substring of "table of contents"
     if ngram_lower in "table of contents":
         return True
 
-    # Check for TOC-style item references
+    # TOC item references
     if _ITEM_NUMBER_PATTERN.search(ngram_lower):
         return True
 
-    # Check if all tokens are stopwords
-    tokens = ngram_lower.split()
-    if tokens and all(t in _STOPWORDS for t in tokens):
+    # ALL tokens are stopwords
+    if all(t in _STOPWORDS for t in tokens):
         return True
+
+    # Any token is 2 chars or less (too short to be meaningful)
+    if any(len(t) <= 2 for t in tokens):
+        return True
+
+    # Bigrams where EITHER word is a filler word — "third party", "designed to", etc.
+    if len(tokens) == 2:
+        if tokens[0] in _FILLER_WORDS or tokens[1] in _FILLER_WORDS:
+            return True
+
+    # Trigrams where 2+ words are filler — "and third party", "from various sources"
+    if len(tokens) == 3:
+        filler_count = sum(1 for t in tokens if t in _FILLER_WORDS)
+        if filler_count >= 2:
+            return True
 
     return False
 
