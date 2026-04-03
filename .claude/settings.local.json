@@ -72,7 +72,11 @@
       "Bash(npx tsc:*)",
       "Bash(npx next:*)",
       "Bash(npm run:*)",
-      "Bash(curl -s \"http://127.0.0.1:8000/companies/TSLA/filings?limit=2\")"
+      "Bash(curl -s \"http://127.0.0.1:8000/companies/TSLA/filings?limit=2\")",
+      "Bash(tasklist)",
+      "Bash(wmic process:*)",
+      "Bash(taskkill //F //PID 22884)",
+      "Bash(taskkill //F //PID 25156)"
     ]
   }
 }

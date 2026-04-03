@@ -402,10 +402,14 @@ def bootstrap_corpus_from_db() -> int:
             select(Section.section_text).where(Section.word_count >= 100)
         ).scalars().all()
 
-        for text in sections:
+        total = len(sections)
+        logger.info("Bootstrapping TF-IDF corpus from %d sections...", total)
+        for i, text in enumerate(sections):
             if text:
                 update_corpus(text)
                 count += 1
+            if (i + 1) % 50 == 0 or (i + 1) == total:
+                print(f"  Corpus bootstrap: {i + 1}/{total} sections processed", flush=True)
 
     logger.info("Bootstrapped TF-IDF corpus from %d sections", count)
     return count

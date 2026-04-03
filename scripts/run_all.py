@@ -322,8 +322,7 @@ def step_analyze(filing_ids: list[int] | None = None, force: bool = False) -> di
             result = _do_analyze(fid, force=force)
             stats["analyzed"] += 1
             sections = result.get("sections_analyzed", 0)
-            if i % 10 == 0 or i == len(filing_ids):
-                _info(f"  [{i}/{len(filing_ids)}] Filing {fid}: {sections} sections")
+            _info(f"  [{i}/{len(filing_ids)}] Filing {fid}: {sections} sections")
         except Exception as e:
             _warn(f"Analysis failed for filing {fid}: {e}")
             stats["failed"] += 1
