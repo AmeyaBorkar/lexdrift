@@ -24,6 +24,9 @@ env/
 # Database
 *.db
 *.sqlite3
+*-journal
+*.db-shm
+*.db-wal
 
 # Data cache
 data/
@@ -39,3 +42,7 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Claude Code local config
+.claude/settings.local.json
+
